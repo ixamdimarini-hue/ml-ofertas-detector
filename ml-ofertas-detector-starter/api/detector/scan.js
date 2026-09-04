@@ -4,8 +4,8 @@ import { saveItemObservation } from "../../lib/detector.js";
 export default async function handler(req, res) {
   try {
     const q = String(req.query.q || "celular").trim();
-    const requestedLimit = Number(req.query.limit || 20);
-    const limit = Math.min(Math.max(requestedLimit, 1), 50);
+    const requestedProducts = Number(req.query.limit || 10);
+    const productLimit = Math.min(Math.max(requestedProducts, 1), 20);
 
     if (!q) {
       return res.status(400).json({
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     productUrl.searchParams.set("site_id", "MLA");
     productUrl.searchParams.set("status", "active");
     productUrl.searchParams.set("q", q);
-    productUrl.searchParams.set("limit", String(limit));
+    productUrl.searchParams.set("limit", String(productLimit));
 
     const productResponse = await fetch(productUrl, {
       headers: {
@@ -41,34 +41,70 @@ export default async function handler(req, res) {
       });
     }
 
-    // 2) Tomar las publicaciones ganadoras (buy box) disponibles.
-    const winnerMap = new Map();
+    // 2) Para cada producto, pedir las publicaciones que compiten en esa PDP.
+    // Endpoint oficial: /products/{PRODUCT_ID}/items
+    const productResults = productData.results || [];
+    const candidateMap = new Map();
+    const productFailures = [];
 
-    for (const product of productData.results || []) {
-      const winner = product.buy_box_winner;
-      if (winner?.item_id) {
-        winnerMap.set(winner.item_id, product.id);
+    for (const product of productResults) {
+      const itemsUrl = new URL(
+        `https://api.mercadolibre.com/products/${encodeURIComponent(product.id)}/items`
+      );
+      itemsUrl.searchParams.set("limit", "20");
+
+      const itemsResponse = await fetch(itemsUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json"
+        }
+      });
+
+      const itemsData = await itemsResponse.json();
+
+      if (!itemsResponse.ok) {
+        productFailures.push({
+          product_id: product.id,
+          status: itemsResponse.status,
+          details: itemsData
+        });
+        continue;
+      }
+
+      for (const row of itemsData.results || []) {
+        const itemId = row.item_id || row.id;
+        if (!itemId) continue;
+
+        if (!candidateMap.has(itemId)) {
+          candidateMap.set(itemId, {
+            catalog_product_id: product.id,
+            listing_snapshot: row
+          });
+        }
       }
     }
 
-    const itemIds = [...winnerMap.keys()];
+    const itemIds = [...candidateMap.keys()];
 
     if (!itemIds.length) {
       return res.status(200).json({
         ok: true,
         query: q,
-        products_found: (productData.results || []).length,
+        products_found: productResults.length,
+        item_candidates_found: 0,
         items_saved: 0,
-        message: "La búsqueda devolvió productos, pero ninguno tenía buy_box_winner. Probá con una búsqueda más comercial, por ejemplo celular, smart tv, auriculares o taladro."
+        product_failures: productFailures.length,
+        message: "Se encontraron productos de catálogo, pero no publicaciones asociadas accesibles."
       });
     }
 
-    // 3) Enriquecer hasta 20 publicaciones por llamada usando el endpoint bulk.
+    // 3) Enriquecer publicaciones reales con /items/bulk.
     const saved = [];
     const failures = [];
 
     for (let i = 0; i < itemIds.length; i += 20) {
       const chunk = itemIds.slice(i, i + 20);
+
       const bulkUrl = new URL("https://api.mercadolibre.com/items/bulk");
       bulkUrl.searchParams.set("ids", chunk.join(","));
 
@@ -94,15 +130,21 @@ export default async function handler(req, res) {
         const body = entry?.body;
 
         if (entry?.code === 200 && body?.id) {
-          await saveItemObservation(body, winnerMap.get(body.id) || body.catalog_product_id || null);
+          const meta = candidateMap.get(body.id);
+          await saveItemObservation(
+            body,
+            meta?.catalog_product_id || body.catalog_product_id || null
+          );
 
           saved.push({
             item_id: body.id,
-            catalog_product_id: winnerMap.get(body.id) || body.catalog_product_id || null,
+            catalog_product_id:
+              meta?.catalog_product_id || body.catalog_product_id || null,
             title: body.title,
             price: body.price,
             original_price: body.original_price ?? null,
             currency_id: body.currency_id,
+            seller_id: body.seller_id ?? null,
             sold_quantity: body.sold_quantity ?? null,
             free_shipping: Boolean(body.shipping?.free_shipping),
             permalink: body.permalink
@@ -116,11 +158,12 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       query: q,
-      products_found: (productData.results || []).length,
-      buy_box_items_found: itemIds.length,
+      products_found: productResults.length,
+      item_candidates_found: itemIds.length,
       items_saved: saved.length,
       saved,
-      failures_count: failures.length
+      product_failures_count: productFailures.length,
+      item_failures_count: failures.length
     });
   } catch (err) {
     console.error(err);
