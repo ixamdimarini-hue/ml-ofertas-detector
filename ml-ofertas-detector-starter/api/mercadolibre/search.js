@@ -16,7 +16,9 @@ export default async function handler(req, res) {
 
     const accessToken = await getValidAccessToken();
 
-    const url = new URL("https://api.mercadolibre.com/sites/MLA/search");
+    const url = new URL("https://api.mercadolibre.com/products/search");
+    url.searchParams.set("site_id", "MLA");
+    url.searchParams.set("status", "active");
     url.searchParams.set("q", q);
     url.searchParams.set("limit", String(limit));
 
@@ -32,28 +34,39 @@ export default async function handler(req, res) {
     if (!response.ok) {
       return res.status(response.status).json({
         ok: false,
-        error: "meli_search_failed",
+        error: "meli_products_search_failed",
         details: data
       });
     }
 
-    const results = (data.results || []).map(item => ({
-      id: item.id,
-      title: item.title,
-      price: item.price,
-      original_price: item.original_price ?? null,
-      currency_id: item.currency_id,
-      permalink: item.permalink,
-      condition: item.condition,
-      sold_quantity: item.sold_quantity ?? null,
-      free_shipping: Boolean(item.shipping?.free_shipping),
-      seller_id: item.seller?.id ?? null,
-      thumbnail: item.thumbnail ?? null
-    }));
+    const results = (data.results || []).map(product => {
+      const winner = product.buy_box_winner || null;
+
+      return {
+        product_id: product.id,
+        name: product.name,
+        status: product.status,
+        domain_id: product.domain_id ?? null,
+        permalink: product.permalink ?? null,
+        family_name: product.family_name ?? null,
+
+        buy_box_winner: winner ? {
+          item_id: winner.item_id ?? null,
+          seller_id: winner.seller_id ?? null,
+          price: winner.price ?? null,
+          original_price: winner.original_price ?? null,
+          currency_id: winner.currency_id ?? null,
+          free_shipping: Boolean(winner.shipping?.free_shipping),
+          listing_type_id: winner.listing_type_id ?? null,
+          official_store_id: winner.official_store_id ?? null
+        } : null
+      };
+    });
 
     return res.status(200).json({
       ok: true,
       query: q,
+      paging: data.paging || null,
       count: results.length,
       results
     });
