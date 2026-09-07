@@ -1,4 +1,4 @@
-\
+
 import { ensureOffersSchema, calcOfferScore } from "../lib/offers.js";
 
 const ALLOWED_STATUS = new Set([
@@ -23,7 +23,6 @@ function parseCommission(card) {
 function parseRatingAndSold(card) {
   const review = component(card, "review_compacted");
   const values = review?.review_compacted?.values || [];
-
   let rating = null;
   let soldText = null;
 
@@ -50,25 +49,22 @@ function parseRatingAndSold(card) {
 }
 
 function parseHighlight(card) {
-  const h = component(card, "highlight");
-  return h?.highlight?.text || null;
+  return component(card, "highlight")?.highlight?.text || null;
 }
 
 function parseTitle(card) {
-  const t = component(card, "title");
-  return t?.title?.text || null;
+  return component(card, "title")?.title?.text || null;
 }
 
 function parsePrice(card) {
-  const p = component(card, "price");
-  const price = p?.price || {};
-
+  const price = component(card, "price")?.price || {};
   const current = price?.current_price?.value ?? null;
   const previous = price?.previous_price?.value ?? null;
   const discountText = price?.discount_label?.text || "";
 
   let discountPct = null;
   const m = discountText.match(/(\d+(?:[.,]\d+)?)\s*%/);
+
   if (m) {
     discountPct = Number(m[1].replace(",", "."));
   } else if (current !== null && previous) {
@@ -82,13 +78,8 @@ function buildProductUrl(card) {
   const meta = card?.metadata || {};
   if (!meta.url) return null;
 
-  let url = meta.url.startsWith("http")
-    ? meta.url
-    : `https://${meta.url}`;
-
-  // Conservamos params del portal cuando existen.
+  let url = meta.url.startsWith("http") ? meta.url : `https://${meta.url}`;
   if (meta.url_params) url += meta.url_params;
-
   return url;
 }
 
@@ -102,14 +93,6 @@ function normalizeAffiliateCard(card) {
 
   if (!title || !meta.product_id) return null;
 
-  const offerScore = calcOfferScore({
-    discount_pct: discountPct || 0,
-    commission_pct: commissionPct || 0,
-    rating: rating || 0,
-    highlight: highlight || "",
-    sold_text: soldText || ""
-  });
-
   return {
     external_product_id: meta.product_id || null,
     item_id: meta.id || null,
@@ -122,7 +105,13 @@ function normalizeAffiliateCard(card) {
     sold_text: soldText,
     rating,
     highlight,
-    offer_score: offerScore,
+    offer_score: calcOfferScore({
+      discount_pct: discountPct || 0,
+      commission_pct: commissionPct || 0,
+      rating: rating || 0,
+      highlight: highlight || "",
+      sold_text: soldText || ""
+    }),
     status: "ESPERANDO_LINK",
     source: "affiliate_portal_json"
   };
@@ -133,29 +122,20 @@ export default async function handler(req, res) {
     const sql = await ensureOffersSchema();
 
     if (req.method === "GET") {
-      const status = String(req.query.status || "").trim();
-
-      const rows = status
-        ? await sql`
-            SELECT * FROM offers_queue
-            WHERE status = ${status}
-            ORDER BY offer_score DESC NULLS LAST, updated_at DESC
-            LIMIT 200
-          `
-        : await sql`
-            SELECT * FROM offers_queue
-            ORDER BY
-              CASE status
-                WHEN 'ESPERANDO_LINK' THEN 1
-                WHEN 'LISTA_PARA_PUBLICAR' THEN 2
-                WHEN 'DETECTADA' THEN 3
-                WHEN 'PUBLICADA' THEN 4
-                ELSE 5
-              END,
-              offer_score DESC NULLS LAST,
-              updated_at DESC
-            LIMIT 200
-          `;
+      const rows = await sql`
+        SELECT * FROM offers_queue
+        ORDER BY
+          CASE status
+            WHEN 'ESPERANDO_LINK' THEN 1
+            WHEN 'LISTA_PARA_PUBLICAR' THEN 2
+            WHEN 'DETECTADA' THEN 3
+            WHEN 'PUBLICADA' THEN 4
+            ELSE 5
+          END,
+          offer_score DESC NULLS LAST,
+          updated_at DESC
+        LIMIT 200
+      `;
 
       return res.status(200).json({
         ok: true,
@@ -164,246 +144,160 @@ export default async function handler(req, res) {
       });
     }
 
-    if (req.method === "POST") {
-      const body = req.body || {};
-      const action = body.action || "create";
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "GET, POST");
+      return res.status(405).json({ ok: false, error: "method_not_allowed" });
+    }
 
-      if (action === "create") {
-        if (!body.title) {
-          return res.status(400).json({
-            ok: false,
-            error: "missing_title",
-            message: "title es obligatorio."
-          });
-        }
+    const body = req.body || {};
+    const action = body.action || "create";
 
-        const score = body.offer_score ?? calcOfferScore({
-          discount_pct: body.discount_pct,
-          commission_pct: body.commission_pct,
-          rating: body.rating,
-          highlight: body.highlight,
-          sold_text: body.sold_text
+    if (action === "import_affiliates") {
+      const payload = body.payload;
+      const cards = payload?.polycard_client_model?.polycards;
+
+      if (!Array.isArray(cards)) {
+        return res.status(400).json({
+          ok: false,
+          error: "missing_polycards",
+          message: "No encontré polycard_client_model.polycards en el JSON."
         });
-
-        const rows = await sql`
-          INSERT INTO offers_queue (
-            external_product_id,
-            item_id,
-            title,
-            product_url,
-            current_price,
-            previous_price,
-            discount_pct,
-            commission_pct,
-            sold_text,
-            rating,
-            highlight,
-            offer_score,
-            affiliate_url,
-            status,
-            source
-          )
-          VALUES (
-            ${body.external_product_id || null},
-            ${body.item_id || null},
-            ${body.title},
-            ${body.product_url || null},
-            ${body.current_price ?? null},
-            ${body.previous_price ?? null},
-            ${body.discount_pct ?? null},
-            ${body.commission_pct ?? null},
-            ${body.sold_text || null},
-            ${body.rating ?? null},
-            ${body.highlight || null},
-            ${score},
-            ${body.affiliate_url || null},
-            ${body.status || "DETECTADA"},
-            ${body.source || "manual"}
-          )
-          RETURNING *
-        `;
-
-        return res.status(201).json({ ok: true, offer: rows[0] });
       }
 
-      if (action === "import_affiliates") {
-        let payload = body.payload;
+      const normalized = cards.map(normalizeAffiliateCard).filter(Boolean);
 
-        if (typeof payload === "string") {
-          try {
-            payload = JSON.parse(payload);
-          } catch {
-            return res.status(400).json({
-              ok: false,
-              error: "invalid_json",
-              message: "El JSON pegado no es válido."
-            });
-          }
-        }
+      // Cargamos todos los existentes una sola vez para evitar muchas consultas a Neon.
+      const existingRows = await sql`
+        SELECT id, external_product_id, status, affiliate_url, published_at
+        FROM offers_queue
+        WHERE external_product_id IS NOT NULL
+      `;
 
-        const cards = payload?.polycard_client_model?.polycards;
+      const existingMap = new Map(
+        existingRows.map(row => [String(row.external_product_id), row])
+      );
 
-        if (!Array.isArray(cards)) {
-          return res.status(400).json({
-            ok: false,
-            error: "missing_polycards",
-            message: "No encontré polycard_client_model.polycards en el JSON."
-          });
-        }
+      let inserted = 0;
+      let updated = 0;
 
-        const normalized = cards
-          .map(normalizeAffiliateCard)
-          .filter(Boolean);
+      for (const o of normalized) {
+        const existing = existingMap.get(String(o.external_product_id));
 
-        let inserted = 0;
-        let updated = 0;
-        const imported = [];
-
-        for (const o of normalized) {
-          const existing = await sql`
-            SELECT * FROM offers_queue
-            WHERE external_product_id = ${o.external_product_id}
-            ORDER BY updated_at DESC
-            LIMIT 1
+        if (existing) {
+          await sql`
+            UPDATE offers_queue
+            SET
+              item_id = ${o.item_id},
+              title = ${o.title},
+              product_url = ${o.product_url},
+              current_price = ${o.current_price},
+              previous_price = ${o.previous_price},
+              discount_pct = ${o.discount_pct},
+              commission_pct = ${o.commission_pct},
+              sold_text = ${o.sold_text},
+              rating = ${o.rating},
+              highlight = ${o.highlight},
+              offer_score = ${o.offer_score},
+              source = ${o.source},
+              updated_at = NOW()
+            WHERE id = ${existing.id}
           `;
-
-          if (existing.length) {
-            const rows = await sql`
-              UPDATE offers_queue
-              SET
-                item_id = ${o.item_id},
-                title = ${o.title},
-                product_url = ${o.product_url},
-                current_price = ${o.current_price},
-                previous_price = ${o.previous_price},
-                discount_pct = ${o.discount_pct},
-                commission_pct = ${o.commission_pct},
-                sold_text = ${o.sold_text},
-                rating = ${o.rating},
-                highlight = ${o.highlight},
-                offer_score = ${o.offer_score},
-                source = ${o.source},
-                updated_at = NOW()
-              WHERE id = ${existing[0].id}
-              RETURNING *
-            `;
-            updated++;
-            imported.push(rows[0]);
-          } else {
-            const rows = await sql`
-              INSERT INTO offers_queue (
-                external_product_id,
-                item_id,
-                title,
-                product_url,
-                current_price,
-                previous_price,
-                discount_pct,
-                commission_pct,
-                sold_text,
-                rating,
-                highlight,
-                offer_score,
-                status,
-                source
-              )
-              VALUES (
-                ${o.external_product_id},
-                ${o.item_id},
-                ${o.title},
-                ${o.product_url},
-                ${o.current_price},
-                ${o.previous_price},
-                ${o.discount_pct},
-                ${o.commission_pct},
-                ${o.sold_text},
-                ${o.rating},
-                ${o.highlight},
-                ${o.offer_score},
-                ${o.status},
-                ${o.source}
-              )
-              RETURNING *
-            `;
-            inserted++;
-            imported.push(rows[0]);
-          }
+          updated++;
+        } else {
+          const rows = await sql`
+            INSERT INTO offers_queue (
+              external_product_id, item_id, title, product_url,
+              current_price, previous_price, discount_pct, commission_pct,
+              sold_text, rating, highlight, offer_score, status, source
+            )
+            VALUES (
+              ${o.external_product_id}, ${o.item_id}, ${o.title}, ${o.product_url},
+              ${o.current_price}, ${o.previous_price}, ${o.discount_pct}, ${o.commission_pct},
+              ${o.sold_text}, ${o.rating}, ${o.highlight}, ${o.offer_score},
+              ${o.status}, ${o.source}
+            )
+            RETURNING id
+          `;
+          existingMap.set(String(o.external_product_id), {
+            id: rows[0].id,
+            external_product_id: o.external_product_id
+          });
+          inserted++;
         }
-
-        return res.status(200).json({
-          ok: true,
-          found: cards.length,
-          normalized: normalized.length,
-          inserted,
-          updated,
-          offers: imported
-        });
       }
 
-      if (action === "update") {
-        const id = Number(body.id);
-
-        if (!id) {
-          return res.status(400).json({
-            ok: false,
-            error: "missing_id",
-            message: "id es obligatorio."
-          });
-        }
-
-        if (body.status && !ALLOWED_STATUS.has(body.status)) {
-          return res.status(400).json({
-            ok: false,
-            error: "invalid_status"
-          });
-        }
-
-        const currentRows = await sql`
-          SELECT * FROM offers_queue WHERE id = ${id} LIMIT 1
-        `;
-
-        if (!currentRows.length) {
-          return res.status(404).json({
-            ok: false,
-            error: "offer_not_found"
-          });
-        }
-
-        const current = currentRows[0];
-        const nextStatus = body.status || current.status;
-        const nextAffiliate = body.affiliate_url !== undefined
-          ? body.affiliate_url
-          : current.affiliate_url;
-
-        const publishedAt = nextStatus === "PUBLICADA"
-          ? (current.published_at || new Date().toISOString())
-          : current.published_at;
-
-        const rows = await sql`
-          UPDATE offers_queue
-          SET
-            affiliate_url = ${nextAffiliate || null},
-            status = ${nextStatus},
-            published_at = ${publishedAt},
-            updated_at = NOW()
-          WHERE id = ${id}
-          RETURNING *
-        `;
-
-        return res.status(200).json({ ok: true, offer: rows[0] });
-      }
-
-      return res.status(400).json({
-        ok: false,
-        error: "invalid_action"
+      return res.status(200).json({
+        ok: true,
+        found: cards.length,
+        normalized: normalized.length,
+        inserted,
+        updated
       });
     }
 
-    res.setHeader("Allow", "GET, POST");
-    return res.status(405).json({
-      ok: false,
-      error: "method_not_allowed"
-    });
+    if (action === "update") {
+      const id = Number(body.id);
+      if (!id) return res.status(400).json({ ok: false, error: "missing_id" });
+
+      if (body.status && !ALLOWED_STATUS.has(body.status)) {
+        return res.status(400).json({ ok: false, error: "invalid_status" });
+      }
+
+      const currentRows = await sql`
+        SELECT * FROM offers_queue WHERE id = ${id} LIMIT 1
+      `;
+
+      if (!currentRows.length) {
+        return res.status(404).json({ ok: false, error: "offer_not_found" });
+      }
+
+      const current = currentRows[0];
+      const nextStatus = body.status || current.status;
+      const nextAffiliate = body.affiliate_url !== undefined
+        ? body.affiliate_url
+        : current.affiliate_url;
+
+      const publishedAt = nextStatus === "PUBLICADA"
+        ? (current.published_at || new Date().toISOString())
+        : current.published_at;
+
+      const rows = await sql`
+        UPDATE offers_queue
+        SET
+          affiliate_url = ${nextAffiliate || null},
+          status = ${nextStatus},
+          published_at = ${publishedAt},
+          updated_at = NOW()
+        WHERE id = ${id}
+        RETURNING *
+      `;
+
+      return res.status(200).json({ ok: true, offer: rows[0] });
+    }
+
+    if (action === "delete") {
+      const id = Number(body.id);
+      if (!id) return res.status(400).json({ ok: false, error: "missing_id" });
+
+      await sql`DELETE FROM offers_queue WHERE id = ${id}`;
+      return res.status(200).json({ ok: true, deleted_id: id });
+    }
+
+    if (action === "delete_test_offers") {
+      const rows = await sql`
+        DELETE FROM offers_queue
+        WHERE source = 'manual_test'
+        RETURNING id
+      `;
+
+      return res.status(200).json({
+        ok: true,
+        deleted: rows.length
+      });
+    }
+
+    return res.status(400).json({ ok: false, error: "invalid_action" });
+
   } catch (err) {
     console.error(err);
     return res.status(500).json({
