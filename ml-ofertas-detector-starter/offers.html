@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cola de Ofertas</title>
+<style>
+  body{font-family:Arial,sans-serif;background:#f5f6f8;margin:0;color:#111}
+  .wrap{max-width:1100px;margin:auto;padding:28px 16px 60px}
+  h1{margin:0 0 8px}
+  .sub{color:#666;margin-bottom:22px}
+  .panel{background:#fff;border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 5px 18px rgba(0,0,0,.06)}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  input,select{padding:11px 12px;border:1px solid #ddd;border-radius:10px;width:100%}
+  button{border:0;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer;background:#111;color:#fff}
+  .cards{display:grid;gap:12px}
+  .card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 18px rgba(0,0,0,.06)}
+  .top{display:flex;justify-content:space-between;gap:12px}
+  .score{font-size:24px;font-weight:800}
+  .status{font-size:12px;padding:5px 8px;border-radius:999px;background:#eee;display:inline-block}
+  .meta{color:#666;font-size:13px;margin-top:6px}
+  .actions{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:12px}
+  a{color:#3483fa;text-decoration:none;font-weight:700}
+  @media(max-width:700px){.grid,.actions{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Cola de Ofertas</h1>
+  <div class="sub">Primer panel operativo: detectar → esperar link → listo → publicada.</div>
+
+  <div class="panel">
+    <h3>Crear oferta de prueba</h3>
+    <div class="grid">
+      <input id="title" placeholder="Producto" value="PS5 Slim">
+      <input id="product_url" placeholder="URL producto">
+      <input id="current_price" type="number" placeholder="Precio actual" value="1404999">
+      <input id="previous_price" type="number" placeholder="Precio anterior" value="1699999">
+      <input id="discount_pct" type="number" placeholder="% OFF" value="17">
+      <input id="commission_pct" type="number" placeholder="% comisión" value="7">
+      <input id="rating" type="number" step="0.1" placeholder="Rating" value="4.9">
+      <input id="sold_text" placeholder="Vendidos" value="+5mil vendidos">
+      <input id="highlight" placeholder="Señal" value="MÁS VENDIDO">
+      <select id="status_new">
+        <option>DETECTADA</option>
+        <option selected>ESPERANDO_LINK</option>
+      </select>
+    </div>
+    <div style="margin-top:12px"><button onclick="createOffer()">Crear oferta</button></div>
+  </div>
+
+  <div id="info" class="sub">Cargando...</div>
+  <div id="cards" class="cards"></div>
+</div>
+
+<script>
+function money(v){
+  if(v===null||v===undefined)return '-';
+  return new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(Number(v));
+}
+
+async function createOffer(){
+  const body={
+    title:document.getElementById('title').value,
+    product_url:document.getElementById('product_url').value||null,
+    current_price:Number(document.getElementById('current_price').value)||null,
+    previous_price:Number(document.getElementById('previous_price').value)||null,
+    discount_pct:Number(document.getElementById('discount_pct').value)||0,
+    commission_pct:Number(document.getElementById('commission_pct').value)||0,
+    rating:Number(document.getElementById('rating').value)||0,
+    sold_text:document.getElementById('sold_text').value||null,
+    highlight:document.getElementById('highlight').value||null,
+    status:document.getElementById('status_new').value,
+    source:'manual_test'
+  };
+  const r=await fetch('/api/offers/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!d.ok){alert(JSON.stringify(d));return}
+  load();
+}
+
+async function updateOffer(id,status){
+  const input=document.getElementById(`aff-${id}`);
+  const affiliate_url=input?input.value.trim():'';
+  const r=await fetch('/api/offers/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status,affiliate_url})});
+  const d=await r.json();
+  if(!d.ok){alert(JSON.stringify(d));return}
+  load();
+}
+
+async function load(){
+  const r=await fetch('/api/offers/list');
+  const d=await r.json();
+  if(!d.ok){document.getElementById('info').textContent='Error cargando ofertas';return}
+  document.getElementById('info').textContent=`${d.count} ofertas en la cola`;
+  document.getElementById('cards').innerHTML=d.offers.map(o=>`
+    <div class="card">
+      <div class="top">
+        <div>
+          <strong>${o.title}</strong>
+          <div class="meta">${money(o.current_price)} · ${o.discount_pct??0}% OFF · Comisión ${o.commission_pct??0}%</div>
+          <div class="meta">${o.sold_text??''} ${o.rating?`· ⭐ ${o.rating}`:''} ${o.highlight?`· ${o.highlight}`:''}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="score">${o.offer_score??0}/100</div>
+          <span class="status">${o.status}</span>
+        </div>
+      </div>
+
+      <div style="margin-top:10px">
+        ${o.product_url?`<a href="${o.product_url}" target="_blank">Abrir producto en Mercado Libre →</a>`:''}
+      </div>
+
+      <div class="actions">
+        <input id="aff-${o.id}" value="${o.affiliate_url??''}" placeholder="Pegá https://meli.la/...">
+        <button onclick="updateOffer(${o.id},'LISTA_PARA_PUBLICAR')">Guardar link</button>
+        <button onclick="updateOffer(${o.id},'PUBLICADA')">Publicada</button>
+      </div>
+    </div>
+  `).join('');
+}
+load();
+</script>
+</body>
+</html>
