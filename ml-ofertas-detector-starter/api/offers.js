@@ -1,3 +1,4 @@
+\
 import { ensureOffersSchema, calcOfferScore } from "../lib/offers.js";
 
 const ALLOWED_STATUS = new Set([
@@ -7,6 +8,125 @@ const ALLOWED_STATUS = new Set([
   "PUBLICADA",
   "DESCARTADA"
 ]);
+
+function component(card, type) {
+  return (card?.components || []).find(c => c?.type === type) || null;
+}
+
+function parseCommission(card) {
+  const chip = component(card, "chip");
+  const text = chip?.chip?.pill?.text || "";
+  const match = text.match(/(\d+(?:[.,]\d+)?)\s*%/);
+  return match ? Number(match[1].replace(",", ".")) : null;
+}
+
+function parseRatingAndSold(card) {
+  const review = component(card, "review_compacted");
+  const values = review?.review_compacted?.values || [];
+
+  let rating = null;
+  let soldText = null;
+
+  for (const v of values) {
+    const text = v?.label?.text;
+    if (!text) continue;
+
+    if (rating === null && /^\d+(?:[.,]\d+)?$/.test(text.trim())) {
+      rating = Number(text.replace(",", "."));
+    }
+
+    if (text.toLowerCase().includes("vendid")) {
+      soldText = text.replace(/^\|\s*/, "").trim();
+    }
+  }
+
+  if (!soldText) {
+    const alt = review?.review_compacted?.alt_text || "";
+    const m = alt.match(/Más de ([^.]+) productos vendidos/i);
+    if (m) soldText = `+${m[1].trim()} vendidos`;
+  }
+
+  return { rating, soldText };
+}
+
+function parseHighlight(card) {
+  const h = component(card, "highlight");
+  return h?.highlight?.text || null;
+}
+
+function parseTitle(card) {
+  const t = component(card, "title");
+  return t?.title?.text || null;
+}
+
+function parsePrice(card) {
+  const p = component(card, "price");
+  const price = p?.price || {};
+
+  const current = price?.current_price?.value ?? null;
+  const previous = price?.previous_price?.value ?? null;
+  const discountText = price?.discount_label?.text || "";
+
+  let discountPct = null;
+  const m = discountText.match(/(\d+(?:[.,]\d+)?)\s*%/);
+  if (m) {
+    discountPct = Number(m[1].replace(",", "."));
+  } else if (current !== null && previous) {
+    discountPct = Number((((previous - current) / previous) * 100).toFixed(2));
+  }
+
+  return { current, previous, discountPct };
+}
+
+function buildProductUrl(card) {
+  const meta = card?.metadata || {};
+  if (!meta.url) return null;
+
+  let url = meta.url.startsWith("http")
+    ? meta.url
+    : `https://${meta.url}`;
+
+  // Conservamos params del portal cuando existen.
+  if (meta.url_params) url += meta.url_params;
+
+  return url;
+}
+
+function normalizeAffiliateCard(card) {
+  const meta = card?.metadata || {};
+  const title = parseTitle(card);
+  const { current, previous, discountPct } = parsePrice(card);
+  const commissionPct = parseCommission(card);
+  const { rating, soldText } = parseRatingAndSold(card);
+  const highlight = parseHighlight(card);
+
+  if (!title || !meta.product_id) return null;
+
+  const offerScore = calcOfferScore({
+    discount_pct: discountPct || 0,
+    commission_pct: commissionPct || 0,
+    rating: rating || 0,
+    highlight: highlight || "",
+    sold_text: soldText || ""
+  });
+
+  return {
+    external_product_id: meta.product_id || null,
+    item_id: meta.id || null,
+    title,
+    product_url: buildProductUrl(card),
+    current_price: current,
+    previous_price: previous,
+    discount_pct: discountPct,
+    commission_pct: commissionPct,
+    sold_text: soldText,
+    rating,
+    highlight,
+    offer_score: offerScore,
+    status: "ESPERANDO_LINK",
+    source: "affiliate_portal_json"
+  };
+}
 
 export default async function handler(req, res) {
   try {
@@ -104,6 +224,120 @@ export default async function handler(req, res) {
         `;
 
         return res.status(201).json({ ok: true, offer: rows[0] });
+      }
+
+      if (action === "import_affiliates") {
+        let payload = body.payload;
+
+        if (typeof payload === "string") {
+          try {
+            payload = JSON.parse(payload);
+          } catch {
+            return res.status(400).json({
+              ok: false,
+              error: "invalid_json",
+              message: "El JSON pegado no es válido."
+            });
+          }
+        }
+
+        const cards = payload?.polycard_client_model?.polycards;
+
+        if (!Array.isArray(cards)) {
+          return res.status(400).json({
+            ok: false,
+            error: "missing_polycards",
+            message: "No encontré polycard_client_model.polycards en el JSON."
+          });
+        }
+
+        const normalized = cards
+          .map(normalizeAffiliateCard)
+          .filter(Boolean);
+
+        let inserted = 0;
+        let updated = 0;
+        const imported = [];
+
+        for (const o of normalized) {
+          const existing = await sql`
+            SELECT * FROM offers_queue
+            WHERE external_product_id = ${o.external_product_id}
+            ORDER BY updated_at DESC
+            LIMIT 1
+          `;
+
+          if (existing.length) {
+            const rows = await sql`
+              UPDATE offers_queue
+              SET
+                item_id = ${o.item_id},
+                title = ${o.title},
+                product_url = ${o.product_url},
+                current_price = ${o.current_price},
+                previous_price = ${o.previous_price},
+                discount_pct = ${o.discount_pct},
+                commission_pct = ${o.commission_pct},
+                sold_text = ${o.sold_text},
+                rating = ${o.rating},
+                highlight = ${o.highlight},
+                offer_score = ${o.offer_score},
+                source = ${o.source},
+                updated_at = NOW()
+              WHERE id = ${existing[0].id}
+              RETURNING *
+            `;
+            updated++;
+            imported.push(rows[0]);
+          } else {
+            const rows = await sql`
+              INSERT INTO offers_queue (
+                external_product_id,
+                item_id,
+                title,
+                product_url,
+                current_price,
+                previous_price,
+                discount_pct,
+                commission_pct,
+                sold_text,
+                rating,
+                highlight,
+                offer_score,
+                status,
+                source
+              )
+              VALUES (
+                ${o.external_product_id},
+                ${o.item_id},
+                ${o.title},
+                ${o.product_url},
+                ${o.current_price},
+                ${o.previous_price},
+                ${o.discount_pct},
+                ${o.commission_pct},
+                ${o.sold_text},
+                ${o.rating},
+                ${o.highlight},
+                ${o.offer_score},
+                ${o.status},
+                ${o.source}
+              )
+              RETURNING *
+            `;
+            inserted++;
+            imported.push(rows[0]);
+          }
+        }
+
+        return res.status(200).json({
+          ok: true,
+          found: cards.length,
+          normalized: normalized.length,
+          inserted,
+          updated,
+          offers: imported
+        });
       }
 
       if (action === "update") {
