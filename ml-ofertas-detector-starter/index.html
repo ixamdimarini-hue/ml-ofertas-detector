@@ -5,14 +5,100 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ML Ofertas Detector</title>
   <style>
-    body{font-family:Arial,sans-serif;max-width:760px;margin:60px auto;padding:0 20px;line-height:1.5}
-    code{background:#f4f4f4;padding:2px 6px;border-radius:4px}
+    :root{font-family:Inter,Arial,sans-serif;color:#111827;background:#f5f7fb}
+    *{box-sizing:border-box}
+    body{margin:0}
+    .wrap{max-width:1100px;margin:0 auto;padding:32px 18px 60px}
+    .hero{background:#ffe600;border-radius:20px;padding:28px;margin-bottom:22px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+    h1{margin:0 0 8px;font-size:34px}
+    .hero p{margin:0;color:#374151}
+    .search{display:flex;gap:10px;margin-top:22px}
+    input{flex:1;border:0;border-radius:12px;padding:15px 16px;font-size:16px}
+    button{border:0;border-radius:12px;padding:0 20px;font-weight:700;cursor:pointer;background:#111827;color:#fff}
+    .status{margin:16px 2px;color:#4b5563}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+    .card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 6px 18px rgba(0,0,0,.06)}
+    .card h3{font-size:17px;margin:0 0 12px;line-height:1.3}
+    .meta{font-size:13px;color:#6b7280;margin-bottom:12px}
+    .price{font-size:22px;font-weight:800;margin:8px 0}
+    .muted{color:#9ca3af;font-size:14px}
+    a{color:#2563eb;text-decoration:none;font-weight:700}
+    .tag{display:inline-block;background:#eef2ff;padding:5px 8px;border-radius:999px;font-size:12px;margin-top:8px}
   </style>
 </head>
 <body>
-  <h1>ML Ofertas Detector</h1>
-  <p>Backend inicial desplegado correctamente.</p>
-  <p>OAuth callback: <code>/api/auth/mercadolibre/callback</code></p>
-  <p>Notificaciones: <code>/api/mercadolibre/notifications</code></p>
+  <div class="wrap">
+    <section class="hero">
+      <h1>ML Ofertas Detector</h1>
+      <p>Buscador visual conectado a Mercado Libre Argentina.</p>
+      <div class="search">
+        <input id="q" placeholder="Ej: notebook, celular, smart tv..." value="notebook" />
+        <button id="btn">Buscar</button>
+      </div>
+    </section>
+
+    <div id="status" class="status">Listo para buscar.</div>
+    <div id="results" class="grid"></div>
+  </div>
+
+  <script>
+    const q = document.getElementById('q');
+    const btn = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+
+    function money(value, currency='ARS'){
+      if(value === null || value === undefined) return null;
+      try{
+        return new Intl.NumberFormat('es-AR',{style:'currency',currency,maximumFractionDigits:0}).format(value);
+      }catch{
+        return value;
+      }
+    }
+
+    async function search(){
+      const term = q.value.trim();
+      if(!term) return;
+      btn.disabled = true;
+      status.textContent = 'Buscando en Mercado Libre...';
+      results.innerHTML = '';
+
+      try{
+        const r = await fetch(`/api/mercadolibre/search?q=${encodeURIComponent(term)}&limit=20`);
+        const data = await r.json();
+
+        if(!r.ok || !data.ok){
+          throw new Error(data?.details?.message || data?.message || 'Error al buscar');
+        }
+
+        status.textContent = `${data.count} resultados mostrados para "${data.query}".`;
+
+        results.innerHTML = data.results.map(p => {
+          const w = p.buy_box_winner;
+          const current = w ? money(w.price, w.currency_id) : null;
+          const regular = w ? money(w.original_price, w.currency_id) : null;
+          return `
+            <article class="card">
+              <h3>${p.name || 'Producto sin nombre'}</h3>
+              <div class="meta">${p.product_id || ''}</div>
+              ${current ? `<div class="price">${current}</div>` : `<div class="muted">Sin precio ganador expuesto por este endpoint</div>`}
+              ${regular ? `<div class="muted">Precio original: ${regular}</div>` : ''}
+              ${w?.free_shipping ? `<span class="tag">Envío gratis</span>` : ''}
+              <div style="margin-top:14px">
+                ${p.permalink ? `<a href="${p.permalink}" target="_blank" rel="noopener">Ver en Mercado Libre →</a>` : ''}
+              </div>
+            </article>
+          `;
+        }).join('');
+      }catch(e){
+        status.textContent = `Error: ${e.message}`;
+      }finally{
+        btn.disabled = false;
+      }
+    }
+
+    btn.addEventListener('click', search);
+    q.addEventListener('keydown', e => { if(e.key === 'Enter') search(); });
+  </script>
 </body>
 </html>
