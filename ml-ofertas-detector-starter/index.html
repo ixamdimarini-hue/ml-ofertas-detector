@@ -5,85 +5,48 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ML Ofertas Detector</title>
   <style>
-    :root{
-      font-family:Inter,Arial,sans-serif;
-      color:#111827;
-      background:#f4f6f8;
-    }
+    :root{font-family:Inter,Arial,sans-serif;color:#111827;background:#f4f6f8}
     *{box-sizing:border-box}
     body{margin:0}
     .wrap{max-width:1180px;margin:0 auto;padding:34px 18px 70px}
-    .hero{
-      background:#ffe600;
-      border-radius:24px;
-      padding:30px;
-      box-shadow:0 12px 34px rgba(0,0,0,.08)
-    }
+    .hero{background:#ffe600;border-radius:24px;padding:30px;box-shadow:0 12px 34px rgba(0,0,0,.08)}
     h1{margin:0 0 8px;font-size:36px}
     .hero p{margin:0;color:#374151}
     .search{display:flex;gap:10px;margin-top:24px}
-    input{
-      flex:1;border:0;border-radius:14px;padding:16px 17px;
-      font-size:16px;outline:none
-    }
-    button{
-      border:0;border-radius:14px;padding:0 22px;font-weight:800;
-      cursor:pointer;background:#111827;color:#fff
-    }
+    input{flex:1;border:0;border-radius:14px;padding:16px 17px;font-size:16px;outline:none}
+    button{border:0;border-radius:14px;padding:0 22px;font-weight:800;cursor:pointer;background:#111827;color:#fff}
     button:disabled{opacity:.6;cursor:not-allowed}
     .section{margin-top:28px}
-    .section-head{
-      display:flex;justify-content:space-between;align-items:center;
-      gap:12px;margin-bottom:12px
-    }
+    .section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
     .section h2{font-size:21px;margin:0}
-    .secondary{
-      background:#fff;color:#111827;border:1px solid #d1d5db;
-      padding:10px 14px
-    }
+    .secondary{background:#fff;color:#111827;border:1px solid #d1d5db;padding:10px 14px}
     .status{margin:10px 2px 14px;color:#4b5563}
+    .intent{background:#fff;border-radius:16px;padding:14px 16px;margin:14px 0;display:none;box-shadow:0 4px 14px rgba(0,0,0,.04)}
+    .intent strong{display:block;margin-bottom:4px}
     .chips{display:flex;flex-wrap:wrap;gap:8px}
-    .chip{
-      background:#fff;color:#111827;border:1px solid #e5e7eb;
-      border-radius:999px;padding:9px 12px;font-weight:600
-    }
+    .chip{background:#fff;color:#111827;border:1px solid #e5e7eb;border-radius:999px;padding:9px 12px;font-weight:600}
     .chip:hover{border-color:#111827}
-    .grid{
-      display:grid;
-      grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
-      gap:16px
-    }
-    .card{
-      background:#fff;border-radius:18px;padding:19px;
-      box-shadow:0 7px 20px rgba(0,0,0,.06);
-      display:flex;flex-direction:column;min-height:220px
-    }
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .card{background:#fff;border-radius:18px;padding:19px;box-shadow:0 7px 20px rgba(0,0,0,.06);display:flex;flex-direction:column;min-height:235px}
     .card h3{font-size:17px;margin:0 0 10px;line-height:1.35}
     .meta{font-size:12px;color:#6b7280;margin-bottom:12px}
     .price{font-size:24px;font-weight:850;margin:7px 0}
     .old{font-size:13px;color:#6b7280;text-decoration:line-through}
     .muted{color:#9ca3af;font-size:14px;line-height:1.4}
     .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-    .tag{
-      display:inline-block;background:#eef2ff;padding:5px 8px;
-      border-radius:999px;font-size:12px
-    }
+    .tag{display:inline-block;background:#eef2ff;padding:5px 8px;border-radius:999px;font-size:12px}
+    .tag.hot{background:#fff3cd}
     .actions{margin-top:auto;padding-top:18px}
-    .meli-link{
-      display:inline-flex;align-items:center;justify-content:center;
-      width:100%;padding:12px 14px;border-radius:12px;
-      background:#3483fa;color:#fff;text-decoration:none;font-weight:800
-    }
-    .meli-link:hover{filter:brightness(.96)}
+    .meli-link{display:inline-flex;align-items:center;justify-content:center;width:100%;padding:12px 14px;border-radius:12px;background:#3483fa;color:#fff;text-decoration:none;font-weight:800}
   </style>
 </head>
 <body>
   <div class="wrap">
     <section class="hero">
       <h1>ML Ofertas Detector</h1>
-      <p>Buscador, tendencias y acceso directo a productos de Mercado Libre Argentina.</p>
+      <p>Buscador inteligente por dominio + tendencias + señal de más vendidos.</p>
       <div class="search">
-        <input id="q" placeholder="Ej: notebook, celular, smart tv..." value="notebook" />
+        <input id="q" placeholder="Ej: PS5, iPhone 15, notebook Lenovo..." value="PS5" />
         <button id="btn">Buscar</button>
       </div>
     </section>
@@ -98,159 +61,114 @@
     </section>
 
     <section class="section">
-      <div class="section-head">
-        <h2>Resultados</h2>
-      </div>
+      <div class="section-head"><h2>Resultados</h2></div>
+      <div id="intent" class="intent"></div>
       <div id="status" class="status">Listo para buscar.</div>
       <div id="results" class="grid"></div>
     </section>
   </div>
 
-  <script>
-    const q = document.getElementById('q');
-    const btn = document.getElementById('btn');
-    const status = document.getElementById('status');
-    const results = document.getElementById('results');
-    const trends = document.getElementById('trends');
-    const trendStatus = document.getElementById('trendStatus');
-    const reloadTrends = document.getElementById('reloadTrends');
+<script>
+const q=document.getElementById('q');
+const btn=document.getElementById('btn');
+const status=document.getElementById('status');
+const intent=document.getElementById('intent');
+const results=document.getElementById('results');
+const trends=document.getElementById('trends');
+const trendStatus=document.getElementById('trendStatus');
+const reloadTrends=document.getElementById('reloadTrends');
 
-    function money(value, currency='ARS'){
-      if(value === null || value === undefined) return null;
-      try{
-        return new Intl.NumberFormat('es-AR',{
-          style:'currency',currency,maximumFractionDigits:0
-        }).format(value);
-      }catch{
-        return String(value);
-      }
-    }
+function money(value,currency='ARS'){
+  if(value===null||value===undefined)return null;
+  try{return new Intl.NumberFormat('es-AR',{style:'currency',currency,maximumFractionDigits:0}).format(value)}
+  catch{return String(value)}
+}
 
-    function safeText(value){
-      return String(value ?? '')
-        .replaceAll('&','&amp;')
-        .replaceAll('<','&lt;')
-        .replaceAll('>','&gt;')
-        .replaceAll('"','&quot;')
-        .replaceAll("'","&#039;");
-    }
+function safeText(value){
+  return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;')
+    .replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'","&#039;");
+}
 
-    function productUrl(p){
-      if(p.product_url) return p.product_url;
-      if(p.permalink) return p.permalink;
-      if(p.product_id){
-        return `https://www.mercadolibre.com.ar/p/${encodeURIComponent(p.product_id)}`;
-      }
-      return null;
-    }
-
-    async function loadTrends(){
-      trendStatus.textContent = 'Cargando tendencias...';
-      trends.innerHTML = '';
-
-      try{
-        const r = await fetch('/api/mercadolibre/trends');
-        const data = await r.json();
-
-        if(!r.ok || !data.ok){
-          throw new Error(data?.details?.message || data?.message || 'Error al cargar tendencias');
-        }
-
-        trendStatus.textContent =
-          `${data.count} tendencias disponibles. Tocá una para buscarla.`;
-
-        trends.innerHTML = data.trends.map(t => `
-          <button class="chip" data-keyword="${safeText(t.keyword)}">
-            ${t.rank}. ${safeText(t.keyword || 'Sin nombre')}
-          </button>
-        `).join('');
-
-        trends.querySelectorAll('.chip').forEach(el => {
-          el.addEventListener('click', () => {
-            q.value = el.dataset.keyword;
-            search();
-          });
-        });
-      }catch(e){
-        trendStatus.textContent = `Error: ${e.message}`;
-      }
-    }
-
-    async function search(){
-      const term = q.value.trim();
-      if(!term) return;
-
-      btn.disabled = true;
-      status.textContent = `Buscando "${term}" en Mercado Libre...`;
-      results.innerHTML = '';
-
-      try{
-        const r = await fetch(
-          `/api/mercadolibre/search?q=${encodeURIComponent(term)}&limit=20`
-        );
-        const data = await r.json();
-
-        if(!r.ok || !data.ok){
-          throw new Error(data?.details?.message || data?.message || 'Error al buscar');
-        }
-
-        status.textContent =
-          `${data.count} resultados mostrados para "${data.query}".`;
-
-        results.innerHTML = data.results.map(p => {
-          const w = p.buy_box_winner;
-          const current = w ? money(w.price, w.currency_id) : null;
-          const regular = w ? money(w.original_price, w.currency_id) : null;
-          const url = productUrl(p);
-
-          return `
-            <article class="card">
-              <h3>${safeText(p.name || 'Producto sin nombre')}</h3>
-              <div class="meta">
-                ${safeText(p.product_id || '')}
-                ${p.domain_id ? ` · ${safeText(p.domain_id)}` : ''}
-              </div>
-
-              ${current
-                ? `<div class="price">${safeText(current)}</div>`
-                : `<div class="muted">
-                     Mercado Libre no expuso un precio ganador para este producto en este endpoint.
-                   </div>`
-              }
-
-              ${regular ? `<div class="old">${safeText(regular)}</div>` : ''}
-
-              <div class="tags">
-                ${w?.free_shipping ? `<span class="tag">Envío gratis</span>` : ''}
-                ${w?.item_id ? `<span class="tag">ITEM ${safeText(w.item_id)}</span>` : ''}
-              </div>
-
-              <div class="actions">
-                ${url
-                  ? `<a class="meli-link" href="${safeText(url)}" target="_blank" rel="noopener noreferrer">
-                       Ver en Mercado Libre →
-                     </a>`
-                  : `<div class="muted">No pudimos construir un enlace para este resultado.</div>`
-                }
-              </div>
-            </article>
-          `;
-        }).join('');
-
-      }catch(e){
-        status.textContent = `Error: ${e.message}`;
-      }finally{
-        btn.disabled = false;
-      }
-    }
-
-    btn.addEventListener('click', search);
-    q.addEventListener('keydown', e => {
-      if(e.key === 'Enter') search();
+async function loadTrends(){
+  trendStatus.textContent='Cargando tendencias...';
+  trends.innerHTML='';
+  try{
+    const r=await fetch('/api/mercadolibre/trends');
+    const data=await r.json();
+    if(!r.ok||!data.ok)throw new Error(data?.details?.message||data?.message||'Error');
+    trendStatus.textContent=`${data.count} tendencias disponibles. Tocá una para buscarla.`;
+    trends.innerHTML=data.trends.map(t=>`
+      <button class="chip" data-keyword="${safeText(t.keyword)}">
+        ${t.rank}. ${safeText(t.keyword||'Sin nombre')}
+      </button>`).join('');
+    trends.querySelectorAll('.chip').forEach(el=>{
+      el.addEventListener('click',()=>{q.value=el.dataset.keyword;search()});
     });
-    reloadTrends.addEventListener('click', loadTrends);
+  }catch(e){trendStatus.textContent=`Error: ${e.message}`}
+}
 
-    loadTrends();
-  </script>
+async function search(){
+  const term=q.value.trim();
+  if(!term)return;
+
+  btn.disabled=true;
+  status.textContent=`Interpretando "${term}" y buscando en Mercado Libre...`;
+  intent.style.display='none';
+  intent.innerHTML='';
+  results.innerHTML='';
+
+  try{
+    const r=await fetch(`/api/mercadolibre/search?q=${encodeURIComponent(term)}&limit=20`);
+    const data=await r.json();
+    if(!r.ok||!data.ok)throw new Error(data?.details?.message||data?.message||'Error al buscar');
+
+    if(data.prediction){
+      intent.style.display='block';
+      intent.innerHTML=`
+        <strong>Mercado Libre interpretó la búsqueda como:</strong>
+        ${safeText(data.prediction.category_name||'Sin categoría')}
+        · ${safeText(data.prediction.domain_name||data.prediction.domain_id||'')}
+        <br><span class="muted">Categoría ${safeText(data.prediction.category_id||'')} · Dominio ${safeText(data.prediction.domain_id||'')}</span>
+      `;
+    }
+
+    status.textContent=`${data.count} resultados para "${data.query}". Priorizamos dominio correcto y ranking de más vendidos.`;
+
+    results.innerHTML=data.results.map(p=>{
+      const w=p.buy_box_winner;
+      const current=w?money(w.price,w.currency_id):null;
+      const regular=w?money(w.original_price,w.currency_id):null;
+      const url=p.product_url||p.permalink||
+        (p.product_id?`https://www.mercadolibre.com.ar/p/${encodeURIComponent(p.product_id)}`:null);
+
+      return `
+        <article class="card">
+          <h3>${safeText(p.name||'Producto sin nombre')}</h3>
+          <div class="meta">${safeText(p.product_id||'')} · relevancia ${Math.round((p.relevance_score||0)*100)}%</div>
+
+          ${current?`<div class="price">${safeText(current)}</div>`:
+            `<div class="muted">Sin precio ganador expuesto por este endpoint.</div>`}
+          ${regular?`<div class="old">${safeText(regular)}</div>`:''}
+
+          <div class="tags">
+            ${p.best_seller_position?`<span class="tag hot">🔥 #${p.best_seller_position} más vendido</span>`:''}
+            ${w?.free_shipping?`<span class="tag">Envío gratis</span>`:''}
+          </div>
+
+          <div class="actions">
+            ${url?`<a class="meli-link" href="${safeText(url)}" target="_blank" rel="noopener noreferrer">Ver en Mercado Libre →</a>`:''}
+          </div>
+        </article>`;
+    }).join('');
+
+  }catch(e){status.textContent=`Error: ${e.message}`}
+  finally{btn.disabled=false}
+}
+
+btn.addEventListener('click',search);
+q.addEventListener('keydown',e=>{if(e.key==='Enter')search()});
+reloadTrends.addEventListener('click',loadTrends);
+loadTrends();
+</script>
 </body>
 </html>
