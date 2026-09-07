@@ -27,7 +27,7 @@
 <body>
 <div class="wrap">
   <h1>Cola de Ofertas</h1>
-  <div class="sub">Primer panel operativo: detectar → esperar link → listo → publicada.</div>
+  <div class="sub">detectar → esperar link → listo → publicada</div>
 
   <div class="panel">
     <h3>Crear oferta de prueba</h3>
@@ -61,6 +61,7 @@ function money(v){
 
 async function createOffer(){
   const body={
+    action:'create',
     title:document.getElementById('title').value,
     product_url:document.getElementById('product_url').value||null,
     current_price:Number(document.getElementById('current_price').value)||null,
@@ -73,7 +74,13 @@ async function createOffer(){
     status:document.getElementById('status_new').value,
     source:'manual_test'
   };
-  const r=await fetch('/api/offers/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+
+  const r=await fetch('/api/offers',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+
   const d=await r.json();
   if(!d.ok){alert(JSON.stringify(d));return}
   load();
@@ -82,43 +89,65 @@ async function createOffer(){
 async function updateOffer(id,status){
   const input=document.getElementById(`aff-${id}`);
   const affiliate_url=input?input.value.trim():'';
-  const r=await fetch('/api/offers/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id,status,affiliate_url})});
+
+  const r=await fetch('/api/offers',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      action:'update',
+      id,
+      status,
+      affiliate_url
+    })
+  });
+
   const d=await r.json();
   if(!d.ok){alert(JSON.stringify(d));return}
   load();
 }
 
 async function load(){
-  const r=await fetch('/api/offers/list');
-  const d=await r.json();
-  if(!d.ok){document.getElementById('info').textContent='Error cargando ofertas';return}
-  document.getElementById('info').textContent=`${d.count} ofertas en la cola`;
-  document.getElementById('cards').innerHTML=d.offers.map(o=>`
-    <div class="card">
-      <div class="top">
-        <div>
-          <strong>${o.title}</strong>
-          <div class="meta">${money(o.current_price)} · ${o.discount_pct??0}% OFF · Comisión ${o.commission_pct??0}%</div>
-          <div class="meta">${o.sold_text??''} ${o.rating?`· ⭐ ${o.rating}`:''} ${o.highlight?`· ${o.highlight}`:''}</div>
-        </div>
-        <div style="text-align:right">
-          <div class="score">${o.offer_score??0}/100</div>
-          <span class="status">${o.status}</span>
-        </div>
-      </div>
+  try{
+    const r=await fetch('/api/offers');
+    const d=await r.json();
 
-      <div style="margin-top:10px">
-        ${o.product_url?`<a href="${o.product_url}" target="_blank">Abrir producto en Mercado Libre →</a>`:''}
-      </div>
+    if(!d.ok){
+      document.getElementById('info').textContent=`Error: ${d.message||d.error}`;
+      return;
+    }
 
-      <div class="actions">
-        <input id="aff-${o.id}" value="${o.affiliate_url??''}" placeholder="Pegá https://meli.la/...">
-        <button onclick="updateOffer(${o.id},'LISTA_PARA_PUBLICAR')">Guardar link</button>
-        <button onclick="updateOffer(${o.id},'PUBLICADA')">Publicada</button>
+    document.getElementById('info').textContent=`${d.count} ofertas en la cola`;
+
+    document.getElementById('cards').innerHTML=d.offers.map(o=>`
+      <div class="card">
+        <div class="top">
+          <div>
+            <strong>${o.title}</strong>
+            <div class="meta">${money(o.current_price)} · ${o.discount_pct??0}% OFF · Comisión ${o.commission_pct??0}%</div>
+            <div class="meta">${o.sold_text??''} ${o.rating?`· ⭐ ${o.rating}`:''} ${o.highlight?`· ${o.highlight}`:''}</div>
+          </div>
+          <div style="text-align:right">
+            <div class="score">${o.offer_score??0}/100</div>
+            <span class="status">${o.status}</span>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          ${o.product_url?`<a href="${o.product_url}" target="_blank">Abrir producto en Mercado Libre →</a>`:''}
+        </div>
+
+        <div class="actions">
+          <input id="aff-${o.id}" value="${o.affiliate_url??''}" placeholder="Pegá https://meli.la/...">
+          <button onclick="updateOffer(${o.id},'LISTA_PARA_PUBLICAR')">Guardar link</button>
+          <button onclick="updateOffer(${o.id},'PUBLICADA')">Publicada</button>
+        </div>
       </div>
-    </div>
-  `).join('');
+    `).join('');
+  }catch(e){
+    document.getElementById('info').textContent=`Error cargando: ${e.message}`;
+  }
 }
+
 load();
 </script>
 </body>
