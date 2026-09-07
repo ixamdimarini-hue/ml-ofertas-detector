@@ -1,4 +1,3 @@
-\
 <!doctype html>
 <html lang="es">
 <head>
@@ -6,124 +5,142 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cola de Ofertas</title>
 <style>
-  body{font-family:Arial,sans-serif;background:#f5f6f8;margin:0;color:#111}
-  .wrap{max-width:1100px;margin:auto;padding:28px 16px 60px}
-  h1{margin:0 0 8px}
-  .sub{color:#666;margin-bottom:22px}
-  .panel{background:#fff;border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 5px 18px rgba(0,0,0,.06)}
-  textarea{width:100%;min-height:170px;padding:12px;border:1px solid #ddd;border-radius:10px;font-family:monospace;resize:vertical}
-  input{padding:11px 12px;border:1px solid #ddd;border-radius:10px;width:100%}
-  button{border:0;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer;background:#111;color:#fff}
-  .cards{display:grid;gap:12px}
-  .card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 5px 18px rgba(0,0,0,.06)}
-  .top{display:flex;justify-content:space-between;gap:12px}
-  .score{font-size:24px;font-weight:800}
-  .status{font-size:12px;padding:5px 8px;border-radius:999px;background:#eee;display:inline-block}
-  .meta{color:#666;font-size:13px;margin-top:6px}
-  .actions{display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-top:12px}
-  .success{color:#08783e;font-weight:700}
-  .error{color:#b42318;font-weight:700}
-  a{color:#3483fa;text-decoration:none;font-weight:700}
-  @media(max-width:700px){.actions{grid-template-columns:1fr}}
+body{font-family:Arial,sans-serif;background:#f5f6f8;margin:0;color:#111}
+.wrap{max-width:1100px;margin:auto;padding:28px 16px 60px}
+h1{margin:0 0 8px}.sub{color:#666;margin-bottom:22px}
+.panel,.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:18px;box-shadow:0 5px 18px rgba(0,0,0,.06)}
+textarea{width:100%;min-height:170px;padding:12px;border:1px solid #ddd;border-radius:10px;font-family:monospace}
+input{padding:11px 12px;border:1px solid #ddd;border-radius:10px;width:100%}
+button{border:0;border-radius:10px;padding:11px 14px;font-weight:700;cursor:pointer;background:#111;color:#fff}
+button.danger{background:#b42318}
+.top{display:flex;justify-content:space-between;gap:12px}
+.score{font-size:24px;font-weight:800}.status{font-size:12px;padding:5px 8px;border-radius:999px;background:#eee}
+.meta{color:#666;font-size:13px;margin-top:6px}
+.actions{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;margin-top:12px}
+.success{color:#08783e;font-weight:700}.error{color:#b42318;font-weight:700}
+a{color:#3483fa;text-decoration:none;font-weight:700}
+@media(max-width:700px){.actions{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>Cola de Ofertas</h1>
-  <div class="sub">Ahora la cola puede cargarse con datos reales copiados desde la respuesta del Portal de Afiliados.</div>
+<h1>Cola de Ofertas</h1>
+<div class="sub">Importá productos reales del Portal de Afiliados y después agregá el meli.la.</div>
 
-  <div class="panel">
-    <h3>Importar productos reales de Afiliados</h3>
-    <p class="sub">
-      En Mercado Libre Afiliados buscá un producto → DevTools → Network → request search → Response →
-      copiá el JSON completo y pegalo acá.
-    </p>
-    <textarea id="affiliateJson" placeholder='Pegá acá el JSON que contiene "polycard_client_model" y "polycards"...'></textarea>
-    <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
-      <button onclick="importAffiliateJson()">Importar ofertas reales</button>
-      <span id="importStatus"></span>
-    </div>
+<div class="panel">
+  <h3>Importar productos reales</h3>
+  <p class="sub">Pegá el JSON completo de Response de la request search del Portal de Afiliados.</p>
+  <textarea id="affiliateJson"></textarea>
+  <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button id="importBtn" onclick="importAffiliateJson()">Importar ofertas reales</button>
+    <button class="danger" onclick="deleteTestOffers()">Borrar ofertas de prueba</button>
+    <span id="importStatus"></span>
   </div>
+</div>
 
-  <div id="info" class="sub">Cargando...</div>
-  <div id="cards" class="cards"></div>
+<div id="info" class="sub">Cargando...</div>
+<div id="cards"></div>
 </div>
 
 <script>
 function money(v){
   if(v===null||v===undefined)return '-';
-  return new Intl.NumberFormat('es-AR',{
-    style:'currency',
-    currency:'ARS',
-    maximumFractionDigits:0
-  }).format(Number(v));
+  return new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(Number(v));
 }
 
 async function importAffiliateJson(){
   const raw=document.getElementById('affiliateJson').value.trim();
   const state=document.getElementById('importStatus');
+  const btn=document.getElementById('importBtn');
 
   if(!raw){
-    state.className='error';
-    state.textContent='Pegá primero el JSON.';
-    return;
+    state.className='error'; state.textContent='Pegá primero el JSON.'; return;
   }
 
+  let parsed;
+  try{ parsed=JSON.parse(raw); }
+  catch(e){
+    state.className='error'; state.textContent='El JSON pegado no es válido.'; return;
+  }
+
+  btn.disabled=true;
   state.className='';
   state.textContent='Importando...';
 
+  try{
+    const controller=new AbortController();
+    const timeout=setTimeout(()=>controller.abort(),30000);
+
+    const r=await fetch('/api/offers',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'import_affiliates',payload:parsed}),
+      signal:controller.signal
+    });
+
+    clearTimeout(timeout);
+    const d=await r.json();
+
+    if(!r.ok || !d.ok){
+      throw new Error(d.message||d.error||`HTTP ${r.status}`);
+    }
+
+    state.className='success';
+    state.textContent=`Listo: ${d.inserted} nuevas, ${d.updated} actualizadas.`;
+    document.getElementById('affiliateJson').value='';
+    await load();
+  }catch(e){
+    state.className='error';
+    state.textContent=e.name==='AbortError'
+      ? 'La importación tardó más de 30 segundos. Revisemos el backend.'
+      : `Error: ${e.message}`;
+  }finally{
+    btn.disabled=false;
+  }
+}
+
+async function deleteTestOffers(){
+  if(!confirm('¿Borrar todas las ofertas de prueba creadas manualmente?')) return;
+
   const r=await fetch('/api/offers',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      action:'import_affiliates',
-      payload:raw
-    })
+    body:JSON.stringify({action:'delete_test_offers'})
   });
-
   const d=await r.json();
+  if(!d.ok){alert(d.message||d.error);return}
+  await load();
+}
 
-  if(!d.ok){
-    state.className='error';
-    state.textContent=d.message||d.error||'Error al importar';
-    return;
-  }
-
-  state.className='success';
-  state.textContent=`Listo: ${d.inserted} nuevas, ${d.updated} actualizadas.`;
-  document.getElementById('affiliateJson').value='';
-  load();
+async function deleteOffer(id){
+  if(!confirm('¿Borrar esta oferta?')) return;
+  const r=await fetch('/api/offers',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({action:'delete',id})
+  });
+  const d=await r.json();
+  if(!d.ok){alert(d.message||d.error);return}
+  await load();
 }
 
 async function updateOffer(id,status){
-  const input=document.getElementById(`aff-${id}`);
-  const affiliate_url=input?input.value.trim():'';
-
+  const affiliate_url=document.getElementById(`aff-${id}`).value.trim();
   const r=await fetch('/api/offers',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      action:'update',
-      id,
-      status,
-      affiliate_url
-    })
+    body:JSON.stringify({action:'update',id,status,affiliate_url})
   });
-
   const d=await r.json();
-  if(!d.ok){alert(JSON.stringify(d));return}
-  load();
+  if(!d.ok){alert(d.message||d.error);return}
+  await load();
 }
 
 async function load(){
   try{
     const r=await fetch('/api/offers');
     const d=await r.json();
-
-    if(!d.ok){
-      document.getElementById('info').textContent=`Error: ${d.message||d.error}`;
-      return;
-    }
+    if(!d.ok) throw new Error(d.message||d.error);
 
     document.getElementById('info').textContent=`${d.count} ofertas en la cola`;
 
@@ -132,23 +149,12 @@ async function load(){
         <div class="top">
           <div>
             <strong>${o.title}</strong>
-            <div class="meta">
-              ${money(o.current_price)}
+            <div class="meta">${money(o.current_price)}
               ${o.previous_price?` · antes ${money(o.previous_price)}`:''}
-              · ${o.discount_pct??0}% OFF
-              · Comisión ${o.commission_pct??0}%
-            </div>
-            <div class="meta">
-              ${o.sold_text??''}
-              ${o.rating?` · ⭐ ${o.rating}`:''}
-              ${o.highlight?` · ${o.highlight}`:''}
-            </div>
-            <div class="meta">
-              ${o.external_product_id?`Producto ${o.external_product_id}`:''}
-              ${o.item_id?` · Item ${o.item_id}`:''}
-            </div>
+              · ${o.discount_pct??0}% OFF · Comisión ${o.commission_pct??0}%</div>
+            <div class="meta">${o.sold_text??''}${o.rating?` · ⭐ ${o.rating}`:''}${o.highlight?` · ${o.highlight}`:''}</div>
+            <div class="meta">${o.external_product_id??''}${o.item_id?` · ${o.item_id}`:''}</div>
           </div>
-
           <div style="text-align:right">
             <div class="score">${o.offer_score??0}/100</div>
             <span class="status">${o.status}</span>
@@ -163,14 +169,13 @@ async function load(){
           <input id="aff-${o.id}" value="${o.affiliate_url??''}" placeholder="Pegá https://meli.la/...">
           <button onclick="updateOffer(${o.id},'LISTA_PARA_PUBLICAR')">Guardar link</button>
           <button onclick="updateOffer(${o.id},'PUBLICADA')">Publicada</button>
+          <button class="danger" onclick="deleteOffer(${o.id})">Borrar</button>
         </div>
-      </div>
-    `).join('');
+      </div>`).join('');
   }catch(e){
     document.getElementById('info').textContent=`Error cargando: ${e.message}`;
   }
 }
-
 load();
 </script>
 </body>
