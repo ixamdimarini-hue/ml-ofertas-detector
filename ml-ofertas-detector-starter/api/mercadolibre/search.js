@@ -1,10 +1,18 @@
 import { getValidAccessToken } from "../../lib/meli.js";
 
+function buildProductUrl(product) {
+  if (product?.permalink) return product.permalink;
+  if (product?.id) {
+    return `https://www.mercadolibre.com.ar/p/${encodeURIComponent(product.id)}`;
+  }
+  return null;
+}
+
 export default async function handler(req, res) {
   try {
     const q = String(req.query.q || "notebook").trim();
     const requestedLimit = Number(req.query.limit || 10);
-    const limit = Math.min(Math.max(requestedLimit, 1), 20);
+    const limit = Math.min(Math.max(requestedLimit, 1), 30);
 
     if (!q) {
       return res.status(400).json({
@@ -48,6 +56,7 @@ export default async function handler(req, res) {
         status: product.status,
         domain_id: product.domain_id ?? null,
         permalink: product.permalink ?? null,
+        product_url: buildProductUrl(product),
         family_name: product.family_name ?? null,
 
         buy_box_winner: winner ? {
