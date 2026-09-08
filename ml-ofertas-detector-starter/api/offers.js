@@ -4,6 +4,7 @@ import { ensureOffersSchema, calcOfferScore } from "../lib/offers.js";
 const ALLOWED_STATUS = new Set([
   "DETECTADA",
   "ESPERANDO_LINK",
+  "NOTIFICADA",
   "LISTA_PARA_PUBLICAR",
   "PUBLICADA",
   "DESCARTADA"
@@ -127,10 +128,11 @@ export default async function handler(req, res) {
         ORDER BY
           CASE status
             WHEN 'ESPERANDO_LINK' THEN 1
-            WHEN 'LISTA_PARA_PUBLICAR' THEN 2
-            WHEN 'DETECTADA' THEN 3
-            WHEN 'PUBLICADA' THEN 4
-            ELSE 5
+            WHEN 'NOTIFICADA' THEN 2
+            WHEN 'LISTA_PARA_PUBLICAR' THEN 3
+            WHEN 'DETECTADA' THEN 4
+            WHEN 'PUBLICADA' THEN 5
+            ELSE 6
           END,
           offer_score DESC NULLS LAST,
           updated_at DESC
@@ -166,7 +168,6 @@ export default async function handler(req, res) {
 
       const normalized = cards.map(normalizeAffiliateCard).filter(Boolean);
 
-      // Cargamos todos los existentes una sola vez para evitar muchas consultas a Neon.
       const existingRows = await sql`
         SELECT id, external_product_id, status, affiliate_url, published_at
         FROM offers_queue
