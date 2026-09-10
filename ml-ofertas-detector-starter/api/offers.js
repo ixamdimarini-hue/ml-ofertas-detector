@@ -90,20 +90,56 @@ function cleanTitleWords(title) {
     .filter(w => w.length > 1 && !stop.has(w));
 }
 
-function familyKey(title) {
+function familyTokens(title) {
   const words = cleanTitleWords(title);
-  if (!words.length) return "sin-familia";
+  const aliases = [];
+  const joined = ` ${words.join(" ")} `;
 
-  // Conserva marca/modelo y evita que color, accesorios o copy comercial creen familias distintas.
-  const modelLike = words.filter(w => /[a-z]/.test(w) && /\d/.test(w));
-  const base = [];
-  if (words[0]) base.push(words[0]);
-  for (const w of modelLike) if (!base.includes(w)) base.push(w);
-  for (const w of words) {
-    if (base.length >= 4) break;
-    if (!base.includes(w)) base.push(w);
+  // Familias muy comunes: normaliza formas distintas de nombrar el mismo producto.
+  if (/\b(playstation|ps)\s*5\b|\bps5\b/.test(joined)) return ["playstation", "5"];
+  if (/\b(playstation|ps)\s*4\b|\bps4\b/.test(joined)) return ["playstation", "4"];
+  if (/\bxbox\b/.test(joined) && /\bseries\b/.test(joined)) {
+    if (/\bseries\s*x\b/.test(joined)) return ["xbox", "series", "x"];
+    if (/\bseries\s*s\b/.test(joined)) return ["xbox", "series", "s"];
   }
-  return base.slice(0, 4).join("-");
+
+  const iphone = joined.match(/\biphone\s*(\d{1,2})\b/);
+  if (iphone) return ["iphone", iphone[1]];
+
+  // Conserva términos de modelo fuertes (letras+números) y las primeras palabras útiles.
+  const modelLike = words.filter(w => /[a-z]/.test(w) && /\d/.test(w));
+  for (const w of modelLike) if (!aliases.includes(w)) aliases.push(w);
+  for (const w of words) {
+    if (aliases.length >= 5) break;
+    if (!aliases.includes(w)) aliases.push(w);
+  }
+  return aliases;
+}
+
+function familyKey(title) {
+  const tokens = familyTokens(title);
+  return tokens.length ? tokens.slice(0, 5).join("-") : "sin-familia";
+}
+
+function sameFamilyTitle(aTitle, bTitle) {
+  const a = familyTokens(aTitle);
+  const b = familyTokens(bTitle);
+  if (!a.length || !b.length) return false;
+
+  // Si ambos caen en una firma canónica corta (ej. playstation-5), se consideran iguales.
+  const aKey = a.slice(0, 3).join("-");
+  const bKey = b.slice(0, 3).join("-");
+  if (aKey === bKey) return true;
+
+  const A = new Set(a);
+  const B = new Set(b);
+  let intersection = 0;
+  for (const x of A) if (B.has(x)) intersection++;
+  const union = new Set([...A, ...B]).size || 1;
+  const jaccard = intersection / union;
+
+  // Dos términos compartidos + similitud razonable alcanzan para tratarlos como la misma familia.
+  return intersection >= 2 && jaccard >= 0.4;
 }
 
 function normalizeAffiliateCard(card) {
@@ -205,14 +241,19 @@ export default async function handler(req, res) {
       }
 
       const normalized = cards.map(normalizeAffiliateCard).filter(Boolean);
-      const groups = new Map();
+      // Agrupa por similitud de producto, no sólo por una clave rígida del título.
+      const groups = [];
       for (const o of normalized) {
-        if (!groups.has(o.family_key)) groups.set(o.family_key, []);
-        groups.get(o.family_key).push(o);
+        let group = groups.find(g => g.some(x => sameFamilyTitle(x.title, o.title)));
+        if (!group) { group = []; groups.push(group); }
+        group.push(o);
       }
 
-      const batchWinners = new Map();
-      for (const [key, list] of groups) batchWinners.set(key, [...list].sort(betterOffer)[0]);
+      const batchWinnerIds = new Set();
+      for (const list of groups) {
+        const winner = [...list].sort(betterOffer)[0];
+        if (winner?.external_product_id) batchWinnerIds.add(String(winner.external_product_id));
+      }
 
       const existingRows = await sql`
         SELECT id, external_product_id, status, affiliate_url, published_at,
@@ -244,15 +285,22 @@ export default async function handler(req, res) {
       let cooldownHeld = 0;
 
       for (const o of normalized) {
-        const winner = batchWinners.get(o.family_key);
-        const isBatchWinner = winner?.external_product_id === o.external_product_id;
-        const recent = recentByFamily.get(o.family_key);
+        const isBatchWinner = batchWinnerIds.has(String(o.external_product_id));
+        // Cooldown también usa similitud, para que variantes del mismo producto no esquiven el bloqueo.
+        let recent = recentByFamily.get(o.family_key);
+        if (!recent) {
+          recent = existingRows.find(row =>
+            ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status) &&
+            new Date(row.selected_at || row.updated_at || 0).getTime() >= recentCutoff &&
+            sameFamilyTitle(row.title, o.title)
+          ) || null;
+        }
         const breakCooldown = isBatchWinner && recent && canBreakCooldown(o, recent);
         const shouldSelect = isBatchWinner && (!recent || breakCooldown);
 
         let targetStatus = shouldSelect ? "ESPERANDO_LINK" : "DETECTADA";
         let reason = shouldSelect
-          ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta de su grupo")
+          ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta entre productos similares")
           : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En espera: hay una oferta mejor del mismo grupo");
 
         const existing = existingMap.get(String(o.external_product_id));
