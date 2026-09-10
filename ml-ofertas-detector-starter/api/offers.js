@@ -12,6 +12,7 @@ const ALLOWED_STATUS = new Set([
 const SMART_COOLDOWN_HOURS = 24;
 const BREAK_COOLDOWN_SCORE_GAIN = 12;
 const BREAK_COOLDOWN_PRICE_DROP_PCT = 15;
+const MAX_SELECTED_PER_IMPORT = 1;
 
 function component(card, type) {
   return (card?.components || []).find(c => c?.type === type) || null;
@@ -241,19 +242,6 @@ export default async function handler(req, res) {
       }
 
       const normalized = cards.map(normalizeAffiliateCard).filter(Boolean);
-      // Agrupa por similitud de producto, no sólo por una clave rígida del título.
-      const groups = [];
-      for (const o of normalized) {
-        let group = groups.find(g => g.some(x => sameFamilyTitle(x.title, o.title)));
-        if (!group) { group = []; groups.push(group); }
-        group.push(o);
-      }
-
-      const batchWinnerIds = new Set();
-      for (const list of groups) {
-        const winner = [...list].sort(betterOffer)[0];
-        if (winner?.external_product_id) batchWinnerIds.add(String(winner.external_product_id));
-      }
 
       const existingRows = await sql`
         SELECT id, external_product_id, status, affiliate_url, published_at,
@@ -263,19 +251,31 @@ export default async function handler(req, res) {
       `;
       const existingMap = new Map(existingRows.map(row => [String(row.external_product_id), row]));
 
-      // Para filas antiguas creadas antes de esta versión, inferimos la familia en memoria.
       for (const row of existingRows) if (!row.family_key) row.family_key = familyKey(row.title);
 
       const recentCutoff = Date.now() - SMART_COOLDOWN_HOURS * 60 * 60 * 1000;
-      const recentByFamily = new Map();
-      for (const row of existingRows) {
-        if (!["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status)) continue;
-        const when = new Date(row.selected_at || row.updated_at || 0).getTime();
-        if (!Number.isFinite(when) || when < recentCutoff) continue;
-        const prev = recentByFamily.get(row.family_key);
-        if (!prev || new Date(prev.selected_at || prev.updated_at || 0) < new Date(row.selected_at || row.updated_at || 0)) {
-          recentByFamily.set(row.family_key, row);
+      const recentRows = existingRows.filter(row =>
+        ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status) &&
+        new Date(row.selected_at || row.updated_at || 0).getTime() >= recentCutoff
+      );
+
+      // V3: cada búsqueda/importación funciona como una tanda.
+      // Elegimos como máximo UNA oferta para notificar: la mejor candidata elegible de toda la tanda.
+      // El resto queda guardado en DETECTADA para estudio, evitando cataratas de productos similares.
+      const ranked = [...normalized].sort(betterOffer);
+      const selectedIds = new Set();
+      for (const candidate of ranked) {
+        if (selectedIds.size >= MAX_SELECTED_PER_IMPORT) break;
+
+        const existing = existingMap.get(String(candidate.external_product_id));
+        if (existing && ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status)) {
+          continue;
         }
+
+        const recent = recentRows.find(row => sameFamilyTitle(row.title, candidate.title)) || null;
+        if (recent && !canBreakCooldown(candidate, recent)) continue;
+
+        selectedIds.add(String(candidate.external_product_id));
       }
 
       let inserted = 0;
@@ -285,23 +285,14 @@ export default async function handler(req, res) {
       let cooldownHeld = 0;
 
       for (const o of normalized) {
-        const isBatchWinner = batchWinnerIds.has(String(o.external_product_id));
-        // Cooldown también usa similitud, para que variantes del mismo producto no esquiven el bloqueo.
-        let recent = recentByFamily.get(o.family_key);
-        if (!recent) {
-          recent = existingRows.find(row =>
-            ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status) &&
-            new Date(row.selected_at || row.updated_at || 0).getTime() >= recentCutoff &&
-            sameFamilyTitle(row.title, o.title)
-          ) || null;
-        }
-        const breakCooldown = isBatchWinner && recent && canBreakCooldown(o, recent);
-        const shouldSelect = isBatchWinner && (!recent || breakCooldown);
+        const shouldSelect = selectedIds.has(String(o.external_product_id));
+        const recent = recentRows.find(row => sameFamilyTitle(row.title, o.title)) || null;
+        const breakCooldown = shouldSelect && recent && canBreakCooldown(o, recent);
 
         let targetStatus = shouldSelect ? "ESPERANDO_LINK" : "DETECTADA";
         let reason = shouldSelect
-          ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta entre productos similares")
-          : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En espera: hay una oferta mejor del mismo grupo");
+          ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta de toda la búsqueda")
+          : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En estudio: no fue la mejor oferta de esta búsqueda");
 
         const existing = existingMap.get(String(o.external_product_id));
         if (existing) {
@@ -351,11 +342,12 @@ export default async function handler(req, res) {
         selected,
         held,
         cooldown_held: cooldownHeld,
-        groups: groups.size,
+        selected_limit_per_import: MAX_SELECTED_PER_IMPORT,
         smart_selection: {
           cooldown_hours: SMART_COOLDOWN_HOURS,
           break_score_gain: BREAK_COOLDOWN_SCORE_GAIN,
-          break_price_drop_pct: BREAK_COOLDOWN_PRICE_DROP_PCT
+          break_price_drop_pct: BREAK_COOLDOWN_PRICE_DROP_PCT,
+          max_selected_per_import: MAX_SELECTED_PER_IMPORT
         }
       });
     }
