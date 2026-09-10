@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ensureOffersSchema, calcOfferScore } from "../lib/offers.js";
 
 const ALLOWED_STATUS = new Set([
@@ -197,10 +198,52 @@ function canBreakCooldown(candidate, recent) {
   return scoreGain >= BREAK_COOLDOWN_SCORE_GAIN || priceDropPct >= BREAK_COOLDOWN_PRICE_DROP_PCT;
 }
 
+
+function parseSoldApprox(text) {
+  const s = String(text || "").toLowerCase().replace(/\./g, "").replace(/,/g, ".");
+  const m = s.match(/([0-9]+(?:\.[0-9]+)?)(?:\s*)(mil|k)?/);
+  if (!m) return 0;
+  let n = Number(m[1]) || 0;
+  if (m[2] === "mil" || m[2] === "k") n *= 1000;
+  return n;
+}
+
+function scoreBreakdown(o) {
+  const discount = Math.min(45, Math.max(0, Number(o.discount_pct || 0) * 1.5));
+  const commission = Math.min(20, Math.max(0, Number(o.commission_pct || 0) * 2));
+  const rating = Math.min(12, Math.max(0, (Number(o.rating || 0) / 5) * 12));
+  const h = String(o.highlight || "").toUpperCase();
+  const highlight = h.includes("MÁS VENDIDO") || h.includes("MAS VENDIDO") ? 10 : (h.includes("MÁS BUSCADO") || h.includes("MAS BUSCADO") ? 7 : 0);
+  const sold = parseSoldApprox(o.sold_text);
+  const sales = sold >= 10000 ? 8 : sold >= 5000 ? 7 : sold >= 1000 ? 6 : sold >= 500 ? 5 : sold >= 100 ? 4 : sold > 0 ? 2 : 0;
+  return {
+    discount: Number(discount.toFixed(1)),
+    commission: Number(commission.toFixed(1)),
+    rating: Number(rating.toFixed(1)),
+    highlight,
+    sales,
+    total: Number(o.offer_score || 0)
+  };
+}
+
+function makeBatchId(normalized) {
+  // Mismo conjunto de resultados = misma tanda lógica. Evita que una segunda
+  // importación automática de la misma búsqueda elija "la siguiente mejor".
+  const signature = [...normalized]
+    .map(o => `${o.external_product_id}:${o.item_id || ""}`)
+    .sort()
+    .join("|");
+  const hash = createHash("sha1").update(signature).digest("hex").slice(0, 16);
+  return `batch_${hash}`;
+}
+
 async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS family_key TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_reason TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selected_at TIMESTAMPTZ`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS import_batch_id TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_rank INTEGER`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_details JSONB`;
 }
 
 export default async function handler(req, res) {
@@ -242,10 +285,11 @@ export default async function handler(req, res) {
       }
 
       const normalized = cards.map(normalizeAffiliateCard).filter(Boolean);
+      const importBatchId = makeBatchId(normalized);
 
       const existingRows = await sql`
         SELECT id, external_product_id, status, affiliate_url, published_at,
-               title, family_key, offer_score, current_price, selected_at, updated_at
+               title, family_key, offer_score, current_price, selected_at, updated_at, import_batch_id
         FROM offers_queue
         WHERE external_product_id IS NOT NULL
       `;
@@ -263,19 +307,32 @@ export default async function handler(req, res) {
       // Elegimos como máximo UNA oferta para notificar: la mejor candidata elegible de toda la tanda.
       // El resto queda guardado en DETECTADA para estudio, evitando cataratas de productos similares.
       const ranked = [...normalized].sort(betterOffer);
+      const rankMap = new Map(ranked.map((o, i) => [String(o.external_product_id), i + 1]));
       const selectedIds = new Set();
-      for (const candidate of ranked) {
-        if (selectedIds.size >= MAX_SELECTED_PER_IMPORT) break;
 
-        const existing = existingMap.get(String(candidate.external_product_id));
-        if (existing && ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status)) {
-          continue;
+      // Anti-repetición de tanda: algunas páginas del portal disparan la misma
+      // búsqueda más de una vez. Si esta tanda ya tuvo una oferta avanzada en
+      // las últimas 24h, no seleccionamos una segunda candidata del mismo lote.
+      const repeatedBatch = existingRows.some(row =>
+        row.import_batch_id === importBatchId &&
+        ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status) &&
+        new Date(row.selected_at || row.updated_at || 0).getTime() >= recentCutoff
+      );
+
+      if (!repeatedBatch) {
+        for (const candidate of ranked) {
+          if (selectedIds.size >= MAX_SELECTED_PER_IMPORT) break;
+
+          const existing = existingMap.get(String(candidate.external_product_id));
+          if (existing && ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status)) {
+            continue;
+          }
+
+          const recent = recentRows.find(row => sameFamilyTitle(row.title, candidate.title)) || null;
+          if (recent && !canBreakCooldown(candidate, recent)) continue;
+
+          selectedIds.add(String(candidate.external_product_id));
         }
-
-        const recent = recentRows.find(row => sameFamilyTitle(row.title, candidate.title)) || null;
-        if (recent && !canBreakCooldown(candidate, recent)) continue;
-
-        selectedIds.add(String(candidate.external_product_id));
       }
 
       let inserted = 0;
@@ -292,9 +349,22 @@ export default async function handler(req, res) {
         let targetStatus = shouldSelect ? "ESPERANDO_LINK" : "DETECTADA";
         let reason = shouldSelect
           ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta de toda la búsqueda")
-          : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En estudio: no fue la mejor oferta de esta búsqueda");
+          : (repeatedBatch
+              ? `En espera: esta misma tanda ya tuvo una oferta seleccionada en las últimas ${SMART_COOLDOWN_HOURS}h`
+              : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En estudio: no fue la mejor oferta de esta búsqueda"));
 
         const existing = existingMap.get(String(o.external_product_id));
+        const selectionRank = rankMap.get(String(o.external_product_id)) || null;
+        const selectionDetails = {
+          batch_id: importBatchId,
+          rank: selectionRank,
+          total_candidates: ranked.length,
+          selected: shouldSelect,
+          score_breakdown: scoreBreakdown(o),
+          cooldown_blocked: Boolean(recent && !breakCooldown && !shouldSelect),
+          cooldown_hours: SMART_COOLDOWN_HOURS,
+          repeated_batch: repeatedBatch
+        };
         if (existing) {
           // No retrocedemos estados ya avanzados por el usuario/n8n.
           const protectedStatus = ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status);
@@ -307,6 +377,7 @@ export default async function handler(req, res) {
                 commission_pct=${o.commission_pct}, sold_text=${o.sold_text}, rating=${o.rating}, highlight=${o.highlight},
                 offer_score=${o.offer_score}, source=${o.source}, status=${targetStatus}, selection_reason=${reason},
                 selected_at=${shouldSelect && !protectedStatus ? new Date().toISOString() : (existing.selected_at || null)},
+                import_batch_id=${importBatchId}, selection_rank=${selectionRank}, selection_details=${JSON.stringify(selectionDetails)}::jsonb,
                 updated_at=NOW()
             WHERE id=${existing.id}
           `;
@@ -315,11 +386,12 @@ export default async function handler(req, res) {
           const rows = await sql`
             INSERT INTO offers_queue (
               external_product_id,item_id,title,family_key,product_url,current_price,previous_price,
-              discount_pct,commission_pct,sold_text,rating,highlight,offer_score,status,source,selection_reason,selected_at
+              discount_pct,commission_pct,sold_text,rating,highlight,offer_score,status,source,selection_reason,selected_at,
+              import_batch_id,selection_rank,selection_details
             ) VALUES (
               ${o.external_product_id},${o.item_id},${o.title},${o.family_key},${o.product_url},${o.current_price},${o.previous_price},
               ${o.discount_pct},${o.commission_pct},${o.sold_text},${o.rating},${o.highlight},${o.offer_score},${targetStatus},${o.source},${reason},
-              ${shouldSelect ? new Date().toISOString() : null}
+              ${shouldSelect ? new Date().toISOString() : null},${importBatchId},${selectionRank},${JSON.stringify(selectionDetails)}::jsonb
             ) RETURNING id
           `;
           existingMap.set(String(o.external_product_id), { id: rows[0].id, status: targetStatus, family_key: o.family_key });
@@ -343,6 +415,8 @@ export default async function handler(req, res) {
         held,
         cooldown_held: cooldownHeld,
         selected_limit_per_import: MAX_SELECTED_PER_IMPORT,
+        import_batch_id: importBatchId,
+        repeated_batch: repeatedBatch,
         smart_selection: {
           cooldown_hours: SMART_COOLDOWN_HOURS,
           break_score_gain: BREAK_COOLDOWN_SCORE_GAIN,
