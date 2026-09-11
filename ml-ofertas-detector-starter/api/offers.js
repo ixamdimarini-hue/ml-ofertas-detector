@@ -65,7 +65,38 @@ function parsePrice(card) {
   const m = discountText.match(/(\d+(?:[.,]\d+)?)\s*%/);
   if (m) discountPct = Number(m[1].replace(",", "."));
   else if (current !== null && previous) discountPct = Number((((previous - current) / previous) * 100).toFixed(2));
-  return { current, previous, discountPct };
+
+  const installments = price?.installments || null;
+  const installmentsText = installments?.text || null;
+  const noInterest = typeof installments?.no_interest === "boolean"
+    ? installments.no_interest
+    : null;
+
+  let installmentsCount = null;
+  if (installmentsText) {
+    const countMatch = installmentsText.match(/(\d+)\s+cuotas?/i);
+    if (countMatch) installmentsCount = Number(countMatch[1]);
+  }
+
+  let installmentAmount = null;
+  const installmentValues = Array.isArray(installments?.values) ? installments.values : [];
+  for (const value of installmentValues) {
+    const amount = value?.price?.value;
+    if (amount !== undefined && amount !== null && Number.isFinite(Number(amount))) {
+      installmentAmount = Number(amount);
+      break;
+    }
+  }
+
+  return {
+    current,
+    previous,
+    discountPct,
+    installmentsText,
+    installmentsCount,
+    installmentAmount,
+    noInterest
+  };
 }
 
 function buildProductUrl(card) {
@@ -147,7 +178,7 @@ function sameFamilyTitle(aTitle, bTitle) {
 function normalizeAffiliateCard(card) {
   const meta = card?.metadata || {};
   const title = parseTitle(card);
-  const { current, previous, discountPct } = parsePrice(card);
+  const { current, previous, discountPct, installmentsText, installmentsCount, installmentAmount, noInterest } = parsePrice(card);
   const commissionPct = parseCommission(card);
   const { rating, soldText } = parseRatingAndSold(card);
   const highlight = parseHighlight(card);
@@ -162,6 +193,10 @@ function normalizeAffiliateCard(card) {
     current_price: current,
     previous_price: previous,
     discount_pct: discountPct,
+    installments_text: installmentsText,
+    installments_count: installmentsCount,
+    installment_amount: installmentAmount,
+    no_interest: noInterest,
     commission_pct: commissionPct,
     sold_text: soldText,
     rating,
@@ -244,6 +279,10 @@ async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS import_batch_id TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_rank INTEGER`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_details JSONB`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS installments_text TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS installments_count INTEGER`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS installment_amount NUMERIC`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS no_interest BOOLEAN`;
 }
 
 export default async function handler(req, res) {
@@ -374,6 +413,8 @@ export default async function handler(req, res) {
             UPDATE offers_queue
             SET item_id=${o.item_id}, title=${o.title}, family_key=${o.family_key}, product_url=${o.product_url},
                 current_price=${o.current_price}, previous_price=${o.previous_price}, discount_pct=${o.discount_pct},
+                installments_text=${o.installments_text}, installments_count=${o.installments_count},
+                installment_amount=${o.installment_amount}, no_interest=${o.no_interest},
                 commission_pct=${o.commission_pct}, sold_text=${o.sold_text}, rating=${o.rating}, highlight=${o.highlight},
                 offer_score=${o.offer_score}, source=${o.source}, status=${targetStatus}, selection_reason=${reason},
                 selected_at=${shouldSelect && !protectedStatus ? new Date().toISOString() : (existing.selected_at || null)},
@@ -386,11 +427,13 @@ export default async function handler(req, res) {
           const rows = await sql`
             INSERT INTO offers_queue (
               external_product_id,item_id,title,family_key,product_url,current_price,previous_price,
-              discount_pct,commission_pct,sold_text,rating,highlight,offer_score,status,source,selection_reason,selected_at,
+              discount_pct,installments_text,installments_count,installment_amount,no_interest,
+              commission_pct,sold_text,rating,highlight,offer_score,status,source,selection_reason,selected_at,
               import_batch_id,selection_rank,selection_details
             ) VALUES (
               ${o.external_product_id},${o.item_id},${o.title},${o.family_key},${o.product_url},${o.current_price},${o.previous_price},
-              ${o.discount_pct},${o.commission_pct},${o.sold_text},${o.rating},${o.highlight},${o.offer_score},${targetStatus},${o.source},${reason},
+              ${o.discount_pct},${o.installments_text},${o.installments_count},${o.installment_amount},${o.no_interest},
+              ${o.commission_pct},${o.sold_text},${o.rating},${o.highlight},${o.offer_score},${targetStatus},${o.source},${reason},
               ${shouldSelect ? new Date().toISOString() : null},${importBatchId},${selectionRank},${JSON.stringify(selectionDetails)}::jsonb
             ) RETURNING id
           `;
