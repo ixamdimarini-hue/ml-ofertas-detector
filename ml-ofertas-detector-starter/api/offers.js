@@ -14,6 +14,8 @@ const SMART_COOLDOWN_HOURS = 24;
 const BREAK_COOLDOWN_SCORE_GAIN = 12;
 const BREAK_COOLDOWN_PRICE_DROP_PCT = 15;
 const MAX_SELECTED_PER_IMPORT = 1;
+const SIMILAR_BATCH_WINDOW_MINUTES = 15;
+const SIMILAR_BATCH_OVERLAP_THRESHOLD = 0.70;
 
 function component(card, type) {
   return (card?.components || []).find(c => c?.type === type) || null;
@@ -272,6 +274,39 @@ function makeBatchId(normalized) {
   return `batch_${hash}`;
 }
 
+
+function overlapRatio(currentIds, previousIds) {
+  const A = new Set((currentIds || []).map(String));
+  const B = new Set((previousIds || []).map(String));
+  if (!A.size || !B.size) return 0;
+  let intersection = 0;
+  for (const id of A) if (B.has(id)) intersection++;
+  return intersection / Math.min(A.size, B.size);
+}
+
+function findRecentSimilarBatch(normalized, existingRows) {
+  const now = Date.now();
+  const cutoff = now - SIMILAR_BATCH_WINDOW_MINUTES * 60 * 1000;
+  const currentIds = normalized.map(o => String(o.external_product_id)).filter(Boolean);
+
+  const groups = new Map();
+  for (const row of existingRows) {
+    if (!row.import_batch_id || !row.external_product_id) continue;
+    const t = new Date(row.updated_at || 0).getTime();
+    if (!Number.isFinite(t) || t < cutoff) continue;
+    if (!groups.has(row.import_batch_id)) groups.set(row.import_batch_id, []);
+    groups.get(row.import_batch_id).push(String(row.external_product_id));
+  }
+
+  let best = null;
+  for (const [batchId, ids] of groups.entries()) {
+    const overlap = overlapRatio(currentIds, ids);
+    if (!best || overlap > best.overlap) best = { batchId, overlap };
+  }
+
+  return best && best.overlap >= SIMILAR_BATCH_OVERLAP_THRESHOLD ? best : null;
+}
+
 async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS family_key TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS selection_reason TEXT`;
@@ -352,11 +387,18 @@ export default async function handler(req, res) {
       // Anti-repetición de tanda: algunas páginas del portal disparan la misma
       // búsqueda más de una vez. Si esta tanda ya tuvo una oferta avanzada en
       // las últimas 24h, no seleccionamos una segunda candidata del mismo lote.
-      const repeatedBatch = existingRows.some(row =>
+      const exactRepeatedBatch = existingRows.some(row =>
         row.import_batch_id === importBatchId &&
         ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA"].includes(row.status) &&
         new Date(row.selected_at || row.updated_at || 0).getTime() >= recentCutoff
       );
+
+      // Mercado Libre puede volver a disparar casi la misma búsqueda con uno o dos
+      // resultados rotados. El hash exacto cambia, pero para nosotros sigue siendo
+      // la misma tanda. Si comparte >=70% de productos con una tanda de los últimos
+      // 15 minutos, no elegimos una nueva ganadora.
+      const similarBatch = findRecentSimilarBatch(normalized, existingRows);
+      const repeatedBatch = exactRepeatedBatch || Boolean(similarBatch);
 
       if (!repeatedBatch) {
         for (const candidate of ranked) {
@@ -402,7 +444,10 @@ export default async function handler(req, res) {
           score_breakdown: scoreBreakdown(o),
           cooldown_blocked: Boolean(recent && !breakCooldown && !shouldSelect),
           cooldown_hours: SMART_COOLDOWN_HOURS,
-          repeated_batch: repeatedBatch
+          repeated_batch: repeatedBatch,
+          repeated_batch_reason: exactRepeatedBatch ? "exact" : (similarBatch ? "similar" : null),
+          similar_batch_id: similarBatch?.batchId || null,
+          similar_batch_overlap: similarBatch ? Number(similarBatch.overlap.toFixed(3)) : null
         };
         if (existing) {
           // No retrocedemos estados ya avanzados por el usuario/n8n.
@@ -460,11 +505,16 @@ export default async function handler(req, res) {
         selected_limit_per_import: MAX_SELECTED_PER_IMPORT,
         import_batch_id: importBatchId,
         repeated_batch: repeatedBatch,
+        repeated_batch_reason: exactRepeatedBatch ? "exact" : (similarBatch ? "similar" : null),
+        similar_batch_id: similarBatch?.batchId || null,
+        similar_batch_overlap: similarBatch ? Number(similarBatch.overlap.toFixed(3)) : null,
         smart_selection: {
           cooldown_hours: SMART_COOLDOWN_HOURS,
           break_score_gain: BREAK_COOLDOWN_SCORE_GAIN,
           break_price_drop_pct: BREAK_COOLDOWN_PRICE_DROP_PCT,
-          max_selected_per_import: MAX_SELECTED_PER_IMPORT
+          max_selected_per_import: MAX_SELECTED_PER_IMPORT,
+          similar_batch_window_minutes: SIMILAR_BATCH_WINDOW_MINUTES,
+          similar_batch_overlap_threshold: SIMILAR_BATCH_OVERLAP_THRESHOLD
         }
       });
     }
