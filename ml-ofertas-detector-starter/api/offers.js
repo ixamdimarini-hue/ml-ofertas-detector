@@ -177,6 +177,35 @@ function sameFamilyTitle(aTitle, bTitle) {
   return intersection >= 2 && jaccard >= 0.4;
 }
 
+
+function financingScore({ installments_count, no_interest, installments_text }) {
+  const count = Number(installments_count || 0);
+  const text = String(installments_text || "").toLowerCase();
+  const interestFree = no_interest === true || text.includes("mismo precio") || text.includes("sin interés") || text.includes("sin interes");
+
+  if (!count) return 0;
+
+  if (interestFree) {
+    if (count >= 12) return 10;
+    if (count >= 9) return 8;
+    if (count >= 6) return 6;
+    if (count >= 3) return 3;
+    return 2;
+  }
+
+  // Cuotas con interés: sirven como facilidad de pago, pero casi no pesan.
+  if (count >= 12) return 1.5;
+  if (count >= 6) return 1;
+  if (count >= 3) return 0.5;
+  return 0;
+}
+
+function calcOfferScoreWithFinancing(data) {
+  const base = Number(calcOfferScore(data) || 0);
+  const financing = financingScore(data);
+  return Number(Math.min(100, base + financing).toFixed(1));
+}
+
 function normalizeAffiliateCard(card) {
   const meta = card?.metadata || {};
   const title = parseTitle(card);
@@ -203,12 +232,15 @@ function normalizeAffiliateCard(card) {
     sold_text: soldText,
     rating,
     highlight,
-    offer_score: calcOfferScore({
+    offer_score: calcOfferScoreWithFinancing({
       discount_pct: discountPct || 0,
       commission_pct: commissionPct || 0,
       rating: rating || 0,
       highlight: highlight || "",
-      sold_text: soldText || ""
+      sold_text: soldText || "",
+      installments_count: installmentsCount || 0,
+      installments_text: installmentsText || "",
+      no_interest: noInterest
     }),
     source: "affiliate_portal_json"
   };
@@ -253,13 +285,20 @@ function scoreBreakdown(o) {
   const highlight = h.includes("MÁS VENDIDO") || h.includes("MAS VENDIDO") ? 10 : (h.includes("MÁS BUSCADO") || h.includes("MAS BUSCADO") ? 7 : 0);
   const sold = parseSoldApprox(o.sold_text);
   const sales = sold >= 10000 ? 8 : sold >= 5000 ? 7 : sold >= 1000 ? 6 : sold >= 500 ? 5 : sold >= 100 ? 4 : sold > 0 ? 2 : 0;
+  const financing = financingScore(o);
+  const baseTotal = Number((discount + commission + rating + highlight + sales).toFixed(1));
   return {
     discount: Number(discount.toFixed(1)),
     commission: Number(commission.toFixed(1)),
     rating: Number(rating.toFixed(1)),
     highlight,
     sales,
-    total: Number(o.offer_score || 0)
+    financing: Number(financing.toFixed(1)),
+    base_total: baseTotal,
+    total: Number(o.offer_score || 0),
+    financing_label: o.installments_count
+      ? `${o.installments_count} cuotas${o.no_interest === true ? " sin interés" : ""}`
+      : null
   };
 }
 
