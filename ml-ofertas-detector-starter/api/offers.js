@@ -439,19 +439,22 @@ export default async function handler(req, res) {
       const similarBatch = findRecentSimilarBatch(normalized, existingRows);
       const repeatedBatch = exactRepeatedBatch || Boolean(similarBatch);
 
-      if (!repeatedBatch) {
-        for (const candidate of ranked) {
-          if (selectedIds.size >= MAX_SELECTED_PER_IMPORT) break;
+      if (!repeatedBatch && ranked.length) {
+        // Regla estricta: SOLO puede avanzar el puesto #1 de la tanda.
+        // Antes, si el #1 estaba bloqueado por cooldown o ya había avanzado,
+        // el sistema saltaba al #2, #3, etc. Eso podía generar alertas extra.
+        // Ahora, si el #1 no es elegible, esta tanda no publica ninguna alternativa.
+        const candidate = ranked[0];
+        const existing = existingMap.get(String(candidate.external_product_id));
 
-          const existing = existingMap.get(String(candidate.external_product_id));
-          if (existing && ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status)) {
-            continue;
-          }
+        const protectedStatus = existing &&
+          ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status);
 
+        if (!protectedStatus) {
           const recent = recentRows.find(row => sameFamilyTitle(row.title, candidate.title)) || null;
-          if (recent && !canBreakCooldown(candidate, recent)) continue;
-
-          selectedIds.add(String(candidate.external_product_id));
+          if (!recent || canBreakCooldown(candidate, recent)) {
+            selectedIds.add(String(candidate.external_product_id));
+          }
         }
       }
 
@@ -471,7 +474,11 @@ export default async function handler(req, res) {
           ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta de toda la búsqueda")
           : (repeatedBatch
               ? `En espera: esta misma tanda ya tuvo una oferta seleccionada en las últimas ${SMART_COOLDOWN_HOURS}h`
-              : (recent ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h` : "En estudio: no fue la mejor oferta de esta búsqueda"));
+              : (recent
+                ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h`
+                : (selectionRank === 1
+                    ? "En espera: el puesto #1 no era elegible para publicar"
+                    : "En estudio: solo avanza el puesto #1 de esta búsqueda")));
 
         const existing = existingMap.get(String(o.external_product_id));
         const selectionRank = rankMap.get(String(o.external_product_id)) || null;
