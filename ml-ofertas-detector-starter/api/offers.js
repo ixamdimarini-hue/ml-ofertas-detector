@@ -468,6 +468,7 @@ export default async function handler(req, res) {
         const shouldSelect = selectedIds.has(String(o.external_product_id));
         const recent = recentRows.find(row => sameFamilyTitle(row.title, o.title)) || null;
         const breakCooldown = shouldSelect && recent && canBreakCooldown(o, recent);
+        const selectionRank = rankMap.get(String(o.external_product_id)) || null;
 
         let targetStatus = shouldSelect ? "ESPERANDO_LINK" : "DETECTADA";
         let reason = shouldSelect
@@ -481,7 +482,6 @@ export default async function handler(req, res) {
                     : "En estudio: solo avanza el puesto #1 de esta búsqueda")));
 
         const existing = existingMap.get(String(o.external_product_id));
-        const selectionRank = rankMap.get(String(o.external_product_id)) || null;
         const selectionDetails = {
           batch_id: importBatchId,
           rank: selectionRank,
