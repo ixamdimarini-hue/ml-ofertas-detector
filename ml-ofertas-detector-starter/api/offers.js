@@ -101,6 +101,16 @@ function parsePrice(card) {
   };
 }
 
+
+function parseImage(card) {
+  const pictureId = card?.pictures?.pictures?.[0]?.id || null;
+  if (!pictureId) return { imageId: null, imageUrl: null };
+
+  // Mercado Libre CDN. The same picture_id format is used in their public APIs.
+  const imageUrl = `https://http2.mlstatic.com/D_${pictureId}-O.jpg`;
+  return { imageId: pictureId, imageUrl };
+}
+
 function buildProductUrl(card) {
   const meta = card?.metadata || {};
   if (!meta.url) return null;
@@ -213,6 +223,7 @@ function normalizeAffiliateCard(card) {
   const commissionPct = parseCommission(card);
   const { rating, soldText } = parseRatingAndSold(card);
   const highlight = parseHighlight(card);
+  const { imageId, imageUrl } = parseImage(card);
   if (!title || !meta.product_id) return null;
 
   return {
@@ -221,6 +232,8 @@ function normalizeAffiliateCard(card) {
     title,
     family_key: familyKey(title),
     product_url: buildProductUrl(card),
+    image_id: imageId,
+    image_url: imageUrl,
     current_price: current,
     previous_price: previous,
     discount_pct: discountPct,
@@ -357,6 +370,8 @@ async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS installments_count INTEGER`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS installment_amount NUMERIC`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS no_interest BOOLEAN`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS image_id TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS image_url TEXT`;
 }
 
 export default async function handler(req, res) {
@@ -503,6 +518,7 @@ export default async function handler(req, res) {
           await sql`
             UPDATE offers_queue
             SET item_id=${o.item_id}, title=${o.title}, family_key=${o.family_key}, product_url=${o.product_url},
+                image_id=${o.image_id}, image_url=${o.image_url},
                 current_price=${o.current_price}, previous_price=${o.previous_price}, discount_pct=${o.discount_pct},
                 installments_text=${o.installments_text}, installments_count=${o.installments_count},
                 installment_amount=${o.installment_amount}, no_interest=${o.no_interest},
@@ -517,12 +533,12 @@ export default async function handler(req, res) {
         } else {
           const rows = await sql`
             INSERT INTO offers_queue (
-              external_product_id,item_id,title,family_key,product_url,current_price,previous_price,
+              external_product_id,item_id,title,family_key,product_url,image_id,image_url,current_price,previous_price,
               discount_pct,installments_text,installments_count,installment_amount,no_interest,
               commission_pct,sold_text,rating,highlight,offer_score,status,source,selection_reason,selected_at,
               import_batch_id,selection_rank,selection_details
             ) VALUES (
-              ${o.external_product_id},${o.item_id},${o.title},${o.family_key},${o.product_url},${o.current_price},${o.previous_price},
+              ${o.external_product_id},${o.item_id},${o.title},${o.family_key},${o.product_url},${o.image_id},${o.image_url},${o.current_price},${o.previous_price},
               ${o.discount_pct},${o.installments_text},${o.installments_count},${o.installment_amount},${o.no_interest},
               ${o.commission_pct},${o.sold_text},${o.rating},${o.highlight},${o.offer_score},${targetStatus},${o.source},${reason},
               ${shouldSelect ? new Date().toISOString() : null},${importBatchId},${selectionRank},${JSON.stringify(selectionDetails)}::jsonb
