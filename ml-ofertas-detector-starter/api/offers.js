@@ -455,21 +455,25 @@ export default async function handler(req, res) {
       const repeatedBatch = exactRepeatedBatch || Boolean(similarBatch);
 
       if (!repeatedBatch && ranked.length) {
-        // Regla estricta: SOLO puede avanzar el puesto #1 de la tanda.
-        // Antes, si el #1 estaba bloqueado por cooldown o ya había avanzado,
-        // el sistema saltaba al #2, #3, etc. Eso podía generar alertas extra.
-        // Ahora, si el #1 no es elegible, esta tanda no publica ninguna alternativa.
-        const candidate = ranked[0];
-        const existing = existingMap.get(String(candidate.external_product_id));
+        // Fallback controlado:
+        // 1) Intentamos publicar el puesto #1.
+        // 2) Si el #1 no es elegible, intentamos SOLO el puesto #2.
+        // 3) Nunca saltamos al #3+ en esta versión.
+        const candidates = ranked.slice(0, 2);
 
-        const protectedStatus = existing &&
-          ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status);
+        for (const candidate of candidates) {
+          const existing = existingMap.get(String(candidate.external_product_id));
 
-        if (!protectedStatus) {
+          const protectedStatus = existing &&
+            ["NOTIFICADA","LISTA_PARA_PUBLICAR","PUBLICADA","DESCARTADA"].includes(existing.status);
+
+          if (protectedStatus) continue;
+
           const recent = recentRows.find(row => sameFamilyTitle(row.title, candidate.title)) || null;
-          if (!recent || canBreakCooldown(candidate, recent)) {
-            selectedIds.add(String(candidate.external_product_id));
-          }
+          if (recent && !canBreakCooldown(candidate, recent)) continue;
+
+          selectedIds.add(String(candidate.external_product_id));
+          break;
         }
       }
 
