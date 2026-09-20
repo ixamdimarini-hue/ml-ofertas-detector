@@ -542,6 +542,8 @@ export default async function handler(req, res) {
                 offer_score=${o.offer_score}, source=${o.source}, status=${targetStatus}, selection_reason=${reason},
                 selected_at=${shouldSelect && !protectedStatus ? new Date().toISOString() : (existing.selected_at || null)},
                 import_batch_id=${importBatchId}, selection_rank=${selectionRank}, selection_details=${JSON.stringify(selectionDetails)}::jsonb,
+                payment_summary=NULL, payment_methods='[]'::jsonb,
+                coupon_text=NULL, coupon_min_amount=NULL, coupon_cap=NULL, coupon_due_date=NULL,
                 updated_at=NOW()
             WHERE id=${existing.id}
           `;
