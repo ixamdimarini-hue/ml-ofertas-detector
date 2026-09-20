@@ -376,6 +376,8 @@ async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_min_amount TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_cap TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_due_date TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS payment_summary TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS payment_methods JSONB`;
 }
 
 export default async function handler(req, res) {
@@ -609,6 +611,8 @@ export default async function handler(req, res) {
       const nextCouponMinAmount = body.coupon_min_amount !== undefined ? body.coupon_min_amount : current.coupon_min_amount;
       const nextCouponCap = body.coupon_cap !== undefined ? body.coupon_cap : current.coupon_cap;
       const nextCouponDueDate = body.coupon_due_date !== undefined ? body.coupon_due_date : current.coupon_due_date;
+      const nextPaymentSummary = body.payment_summary !== undefined ? body.payment_summary : current.payment_summary;
+      const nextPaymentMethods = body.payment_methods !== undefined ? body.payment_methods : current.payment_methods;
       const publishedAt = nextStatus === "PUBLICADA" ? (current.published_at || new Date().toISOString()) : current.published_at;
 
       const rows = await sql`
@@ -618,6 +622,8 @@ export default async function handler(req, res) {
             coupon_min_amount=${nextCouponMinAmount || null},
             coupon_cap=${nextCouponCap || null},
             coupon_due_date=${nextCouponDueDate || null},
+            payment_summary=${nextPaymentSummary || null},
+            payment_methods=${nextPaymentMethods ? JSON.stringify(nextPaymentMethods) : null}::jsonb,
             status=${nextStatus}, published_at=${publishedAt}, updated_at=NOW()
         WHERE id=${id}
         RETURNING *
