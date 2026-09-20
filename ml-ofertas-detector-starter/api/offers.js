@@ -372,6 +372,10 @@ async function ensureSmartColumns(sql) {
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS no_interest BOOLEAN`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS image_id TEXT`;
   await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS image_url TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_text TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_min_amount TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_cap TEXT`;
+  await sql`ALTER TABLE offers_queue ADD COLUMN IF NOT EXISTS coupon_due_date TEXT`;
 }
 
 export default async function handler(req, res) {
@@ -491,14 +495,20 @@ export default async function handler(req, res) {
 
         let targetStatus = shouldSelect ? "ESPERANDO_LINK" : "DETECTADA";
         let reason = shouldSelect
-          ? (breakCooldown ? "Mejoró claramente una oferta reciente" : "Mejor oferta de toda la búsqueda")
+          ? (breakCooldown
+              ? "Mejoró claramente una oferta reciente"
+              : (selectionRank === 2
+                  ? "Fallback: el puesto #1 no era elegible; avanzó el #2"
+                  : "Mejor oferta de toda la búsqueda"))
           : (repeatedBatch
               ? `En espera: esta misma tanda ya tuvo una oferta seleccionada en las últimas ${SMART_COOLDOWN_HOURS}h`
               : (recent
                 ? `En espera: familia publicada/notificada en las últimas ${SMART_COOLDOWN_HOURS}h`
                 : (selectionRank === 1
                     ? "En espera: el puesto #1 no era elegible para publicar"
-                    : "En estudio: solo avanza el puesto #1 de esta búsqueda")));
+                    : (selectionRank === 2
+                        ? "En estudio: puesto #2 disponible como fallback si el #1 no puede avanzar"
+                        : "En estudio: solo pueden avanzar los puestos #1 o #2 de esta búsqueda"))));
 
         const existing = existingMap.get(String(o.external_product_id));
         const selectionDetails = {
@@ -595,11 +605,20 @@ export default async function handler(req, res) {
       const current = currentRows[0];
       const nextStatus = body.status || current.status;
       const nextAffiliate = body.affiliate_url !== undefined ? body.affiliate_url : current.affiliate_url;
+      const nextCouponText = body.coupon_text !== undefined ? body.coupon_text : current.coupon_text;
+      const nextCouponMinAmount = body.coupon_min_amount !== undefined ? body.coupon_min_amount : current.coupon_min_amount;
+      const nextCouponCap = body.coupon_cap !== undefined ? body.coupon_cap : current.coupon_cap;
+      const nextCouponDueDate = body.coupon_due_date !== undefined ? body.coupon_due_date : current.coupon_due_date;
       const publishedAt = nextStatus === "PUBLICADA" ? (current.published_at || new Date().toISOString()) : current.published_at;
 
       const rows = await sql`
         UPDATE offers_queue
-        SET affiliate_url=${nextAffiliate || null}, status=${nextStatus}, published_at=${publishedAt}, updated_at=NOW()
+        SET affiliate_url=${nextAffiliate || null},
+            coupon_text=${nextCouponText || null},
+            coupon_min_amount=${nextCouponMinAmount || null},
+            coupon_cap=${nextCouponCap || null},
+            coupon_due_date=${nextCouponDueDate || null},
+            status=${nextStatus}, published_at=${publishedAt}, updated_at=NOW()
         WHERE id=${id}
         RETURNING *
       `;
